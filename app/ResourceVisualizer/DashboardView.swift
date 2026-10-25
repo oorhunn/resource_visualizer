@@ -32,6 +32,13 @@ struct DashboardView: View {
                     Card("Memory") { MemoryBreakdown(memory: monitor.memory) }
                         .frame(width: 280)
                 }
+                Card("Chip") {
+                    ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory)
+                        .frame(height: 300)
+                    Text("Layout generated from the reported core counts. Height and colour show "
+                        + "load; GPU load is one figure for all cores, and the Neural Engine is not reported.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Card("Cores") { CoreGrid(cores: monitor.cores) }
                 Card("Processes") { ProcessTable(processes: monitor.processes, state: state) }
             }

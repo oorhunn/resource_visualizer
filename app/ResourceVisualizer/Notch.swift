@@ -5,7 +5,7 @@ import SwiftUI
 /// Where the notch is on a screen, in AppKit screen coordinates (origin bottom-left).
 struct NotchGeometry: Equatable {
     static let wingWidth: CGFloat = 76
-    static let expandedSize = CGSize(width: 560, height: 200)
+    static let expandedSize = CGSize(width: 620, height: 200)
 
     let screenFrame: NSRect
     let notchWidth: CGFloat // 0 on screens without a notch
@@ -209,53 +209,58 @@ private struct NotchPanel: View {
     let openDashboard: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 20) {
-                VStack(alignment: .leading, spacing: 6) {
-                    stat("CPU", Format.percent(monitor.cpuAverage), monitor.cpuAverage)
-                    HStack(alignment: .bottom, spacing: 2) {
-                        ForEach(monitor.cores) { CoreBar(core: $0).frame(width: 6, height: 34) }
+        HStack(alignment: .top, spacing: 16) {
+            ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory,
+                     labeled: false)
+                .frame(width: 210)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        stat("CPU", Format.percent(monitor.cpuAverage), monitor.cpuAverage)
+                        Meter(monitor.cpuAverage.map { $0 / 100 }, color: .level(monitor.cpuAverage))
+                        Text("\(monitor.cores.count) cores").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .frame(width: 80)
+                    VStack(alignment: .leading, spacing: 6) {
+                        stat("Memory", Format.percent(monitor.memory.usedPercent),
+                             monitor.memory.usedPercent)
+                        Meter(monitor.memory.usedPercent / 100,
+                              color: .level(monitor.memory.usedPercent))
+                        Text("\(Format.bytes(monitor.memory.used)) of \(Format.bytes(monitor.memory.total))")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .frame(width: 130)
+                    VStack(alignment: .leading, spacing: 6) {
+                        stat("GPU", Format.percent(monitor.gpuUtilization), monitor.gpuUtilization)
+                        Meter(monitor.gpuUtilization.map { $0 / 100 },
+                              color: .level(monitor.gpuUtilization))
+                    }
+                    .frame(width: 80)
+                }
+                Divider().overlay(.white.opacity(0.2))
+                VStack(spacing: 4) {
+                    ForEach(topProcesses) { process in
+                        HStack {
+                            Text(process.name).lineLimit(1)
+                            Spacer()
+                            Text(String(format: "%.1f%%", process.cpu ?? 0))
+                                .foregroundStyle(Color.level(process.cpu))
+                                .frame(width: 60, alignment: .trailing)
+                            Text(Format.bytes(process.memory)).foregroundStyle(.secondary)
+                                .frame(width: 70, alignment: .trailing)
+                        }
+                        .font(.system(size: 11)).monospacedDigit()
                     }
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    stat("Memory", Format.percent(monitor.memory.usedPercent),
-                         monitor.memory.usedPercent)
-                    Meter(monitor.memory.usedPercent / 100,
-                          color: .level(monitor.memory.usedPercent))
-                    Text("\(Format.bytes(monitor.memory.used)) of \(Format.bytes(monitor.memory.total))")
-                        .font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                HStack {
+                    Button("Open Dashboard", action: openDashboard)
+                    Spacer()
+                    Button("Quit") { NSApp.terminate(nil) }
                 }
-                .frame(width: 130)
-                VStack(alignment: .leading, spacing: 6) {
-                    stat("GPU", Format.percent(monitor.gpuUtilization), monitor.gpuUtilization)
-                    Meter(monitor.gpuUtilization.map { $0 / 100 },
-                          color: .level(monitor.gpuUtilization))
-                }
-                .frame(width: 90)
+                .buttonStyle(.borderless)
+                .font(.caption)
             }
-            Divider().overlay(.white.opacity(0.2))
-            VStack(spacing: 4) {
-                ForEach(topProcesses) { process in
-                    HStack {
-                        Text(process.name).lineLimit(1)
-                        Spacer()
-                        Text(String(format: "%.1f%%", process.cpu ?? 0))
-                            .foregroundStyle(Color.level(process.cpu))
-                            .frame(width: 60, alignment: .trailing)
-                        Text(Format.bytes(process.memory)).foregroundStyle(.secondary)
-                            .frame(width: 70, alignment: .trailing)
-                    }
-                    .font(.system(size: 11)).monospacedDigit()
-                }
-            }
-            Spacer(minLength: 0)
-            HStack {
-                Button("Open Dashboard", action: openDashboard)
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
         }
     }
 

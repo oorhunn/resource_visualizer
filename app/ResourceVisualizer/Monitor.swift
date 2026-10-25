@@ -5,6 +5,7 @@ import Observation
 struct CoreSample: Identifiable {
     let id: Int
     let type: Character // "P", "E" or "?"
+    let cluster: Int    // -1 when unknown
     var busy: Double?
     var user: Double?
     var system: Double?
@@ -118,7 +119,8 @@ final class Monitor {
         for core in before?.cores ?? [] { oldCores[core.id] = core }
         cores = raw.cores.map { core in
             var sample = CoreSample(id: Int(core.id),
-                                    type: Character(UnicodeScalar(UInt8(bitPattern: core.type))))
+                                    type: Character(UnicodeScalar(UInt8(bitPattern: core.type))),
+                                    cluster: Int(core.cluster))
             guard let old = oldCores[core.id] else { return sample }
             // Wrapping subtraction matches the 32-bit kernel tick counters.
             let user = Double(core.user &- old.user), system = Double(core.system &- old.system)
