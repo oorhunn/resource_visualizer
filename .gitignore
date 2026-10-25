@@ -11,3 +11,7 @@ compile_commands.json
 
 # macOS
 .DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/

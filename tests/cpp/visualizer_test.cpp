@@ -1,5 +1,5 @@
-#include "http.hpp"
 #include "monitor.hpp"
+#include "monitor_c.h"
 #include "render.hpp"
 
 #include <cmath>
@@ -45,14 +45,6 @@ int main() {
         require(memory.total == monitor::physical_memory(), "Memory total matches installed RAM");
         require(memory.used > 0 && memory.used == memory.app + memory.wired + memory.compressed,
                 "Memory used accounting");
-        require(http::get_path("GET /api/stats?x=1 HTTP/1.1\r\nHost: a\r\n\r\n") == "/api/stats",
-                "GET path without query string");
-        require(http::get_path("POST / HTTP/1.1\r\n\r\n").empty(), "Only GET is served");
-        require(http::get_path("GET /").empty(), "Malformed request line");
-        const auto reply = http::response("200 OK", "text/plain", "hi");
-        require(reply.find("Content-Length: 2\r\n") != std::string::npos &&
-                    reply.substr(reply.size() - 6) == "\r\n\r\nhi",
-                "Response framing");
         const auto topology = monitor::collect_core_topology();
         const auto cores = monitor::collect_cpu_cores();
         // Intel Macs report no topology; when present it must cover every core exactly once.
@@ -60,6 +52,21 @@ int main() {
         for (std::size_t i = 0; i < topology.size(); ++i)
             require(topology[i].id == i && (topology[i].type == 'P' || topology[i].type == 'E'),
                     "Topology ids and types");
+        // C bridge used by the Swift app.
+        rv_core bridged[256];
+        const auto core_count = rv_cpu_cores(bridged, 256);
+        require(core_count == cores.size(), "Bridge reports every core");
+        require(core_count > 0 && rv_cpu_cores(bridged, 1) == core_count,
+                "Bridge returns the full count when capacity is short");
+        for (std::size_t i = 0; i < topology.size(); ++i)
+            require(bridged[i].type == topology[i].type, "Bridge carries core types");
+        rv_memory bridged_memory{};
+        require(rv_memory_stats(&bridged_memory) && bridged_memory.total == memory.total,
+                "Bridge memory totals");
+        rv_process one{};
+        const auto process_count = rv_processes(&one, 1);
+        require(process_count > 1 && one.pid > 0 && one.name[0] != '\0',
+                "Bridge fills processes up to capacity");
         std::cout << "All visualizer tests passed\n";
         return 0;
     } catch (const std::exception &error) {
