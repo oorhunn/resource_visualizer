@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let monitor = Monitor()
     private let dashboardState = DashboardState()
     private var dashboard: NSWindow?
+    private var dashboardFitted = false
     private var notch: NotchController?
     private var notchItem: NSMenuItem?
 
@@ -36,7 +37,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: false)
             window.title = "Resource Visualizer"
-            window.contentViewController = NSHostingController(rootView: DashboardView(monitor: monitor, state: dashboardState))
+            window.contentViewController = NSHostingController(rootView: DashboardView(
+                monitor: monitor, state: dashboardState
+            ) { [weak self, weak window] height in
+                guard let self, let window, !self.dashboardFitted else { return }
+                self.dashboardFitted = true
+                Self.fit(window, toContentHeight: height)
+            })
             window.isReleasedWhenClosed = false
             window.center()
             window.setFrameAutosaveName("Dashboard")
@@ -44,6 +51,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate()
         dashboard?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Sizes the window so the content down to the chip shows without scrolling, keeping its top edge.
+    private static func fit(_ window: NSWindow, toContentHeight height: CGFloat) {
+        let current = window.frame
+        let width = window.contentRect(forFrameRect: current).width
+        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: width, height: height.rounded(.up)))
+        frame.origin = NSPoint(x: current.minX, y: current.maxY - frame.height)
+        if let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            frame.size.height = min(frame.height, visible.height)
+            frame.origin.y = min(max(current.maxY - frame.height, visible.minY), visible.maxY - frame.height)
+        }
+        window.setFrame(frame, display: true)
     }
 
     @objc private func toggleNotch() {

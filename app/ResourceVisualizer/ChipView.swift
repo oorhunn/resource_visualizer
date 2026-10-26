@@ -9,9 +9,12 @@ struct ChipView: View {
     let gpu: GpuSample?
     let memory: MemorySample
     var labeled = true
+    /// Called with a CPU core's id when it is clicked; nil leaves the chip unclickable.
+    var onSelectCore: ((Int) -> Void)? = nil
 
     // A property wrapper rather than the @State macro, which is unavailable without Xcode.
     @StateObject private var motion = ChipMotion()
+    @StateObject private var pointer = ChipPointer()
 
     var body: some View {
         let target = Loads(cores: cores, gpu: gpu, memory: memory)
@@ -19,8 +22,31 @@ struct ChipView: View {
             let shown = motion.loads(at: timeline.date) ?? target
             let chip = ChipModel(cores: shown.applied(to: cores), gpu: shown.applied(to: gpu),
                                  memory: shown.applied(to: memory))
-            Canvas { context, size in chip.draw(in: &context, size: size, labeled: labeled) }
+            GeometryReader { geometry in
+                let hovered = pointer.location.flatMap { chip.block(at: $0, size: geometry.size) }
+                Canvas { context, size in
+                    chip.draw(in: &context, size: size, labeled: labeled, highlight: hovered)
+                }
+                .onTapGesture { location in
+                    if let onSelectCore, let block = chip.block(at: location, size: geometry.size),
+                       let core = chip.core(of: block) {
+                        onSelectCore(core)
+                    }
+                }
+                .overlay {
+                    if let hovered, let location = pointer.location, let name = chip.name(of: hovered) {
+                        let zoomable = onSelectCore != nil && chip.core(of: hovered) != nil
+                        tooltip(zoomable ? "\(name) · click to zoom in" : name, at: location, in: geometry.size)
+                    }
+                }
+            }
         }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location): pointer.location = location
+                case .ended: pointer.location = nil
+                }
+            }
             .onChange(of: target) { _, new in motion.retarget(new) }
             .accessibilityElement()
             .accessibilityLabel("Chip")
@@ -28,6 +54,25 @@ struct ChipView: View {
                 + "GPU \(Format.percent(gpu?.utilization)), "
                 + "memory \(Format.percent(memory.total == 0 ? nil : memory.usedPercent))")
     }
+
+    /// Name of the hovered block, kept just above the pointer and inside the view.
+    private func tooltip(_ text: String, at point: CGPoint, in size: CGSize) -> some View {
+        Text(text)
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
+            .fixedSize()
+            .position(x: min(max(point.x, 70), max(size.width - 70, 70)),
+                      y: point.y > 30 ? point.y - 18 : point.y + 22)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Pointer position over the chip, in the view's coordinates; nil when it is elsewhere.
+@MainActor
+private final class ChipPointer: ObservableObject {
+    @Published var location: CGPoint?
 }
 
 /// Eases the drawn loads from one sample to the next; Canvas does not take part in SwiftUI
@@ -122,6 +167,8 @@ private struct Block {
     var tint: Color = .clear
     var heat: Double = 0 // tint opacity, 0...1
     var fill: Double = 1 // tinted share of the top face, from the back edge
+    var name: String?    // shown on hover
+    var core: Int?       // CPU core id, for zooming in
 
     var x1: Double { x + width }
     var y1: Double { y + depth }
@@ -164,15 +211,18 @@ private struct ChipModel {
             let size = type == "E" ? 0.62 : 1.0
             let rows = members.count > 2 ? 2 : 1
             let name = type == "P" ? "P-cores" : type == "E" ? "E-cores" : "CPU"
+            let core = type == "P" ? "P-core" : type == "E" ? "E-core" : "Core"
             let area = region(name, percent: average(members.compactMap(\.busy)),
                               x: margin, y: cursor, count: members.count, rows: rows, cell: size,
-                              cellGap: gap, heat: members.map(\.busy))
+                              cellGap: gap, heat: members.map(\.busy), cores: members.map(\.id),
+                              cellName: { "\(core) \(members[$0].id)" })
             cpuWidth = max(cpuWidth, area.0)
             cursor += area.1 + 0.35
         }
         // All current Apple chips have a 16-core Neural Engine.
         let ane = region("Neural Engine", percent: nil, x: margin, y: cursor, count: 16, rows: 2,
-                         cell: 0.3, cellGap: 0.08, heat: [])
+                         cell: 0.3, cellGap: 0.08, heat: [],
+                         cellName: { "Neural Engine core \($0 + 1)" })
         cpuWidth = max(cpuWidth, ane.0)
         cursor += ane.1
         let cpuDepth = cursor - margin
@@ -186,7 +236,8 @@ private struct ChipModel {
         let load = gpu?.utilization
         let gpuRegion = region(gpu?.cores == nil ? "GPU" : "GPU · \(gpuCores) cores", percent: load,
                                x: gpuX, y: margin, count: gpuCores, rows: rows, cell: cell,
-                               cellGap: gap, heat: Array(repeating: load, count: gpuCores))
+                               cellGap: gap, heat: Array(repeating: load, count: gpuCores),
+                               cellName: { "GPU core \($0 + 1)" })
 
         let dieWidth = gpuX + gpuRegion.0 + margin
         let dieDepth = max(cpuDepth, gpuRegion.1) + 2 * margin
@@ -202,7 +253,8 @@ private struct ChipModel {
             return (0..<count).map { i in
                 Block(x: x, y: Double(i) * (depth + gap), width: packageWidth, depth: depth,
                       z: 0, height: 0.5, color: Palette.package, tint: .level(used), heat: 0.85,
-                      fill: (used ?? 0) / 100)
+                      fill: (used ?? 0) / 100,
+                      name: "Unified memory · \(Format.percent(used)) used")
             }
         }
         let leftColumn = column(left, x: -0.45 - packageWidth)
@@ -214,10 +266,10 @@ private struct ChipModel {
 
         let minX = (leftColumn.first?.x ?? 0) - 0.5, maxX = (rightColumn.first?.x1 ?? dieWidth) + 0.5
         back = [Block(x: minX, y: -0.5, width: maxX - minX, depth: dieDepth + 1, z: -0.2,
-                      height: 0.2, color: Palette.substrate)]
+                      height: 0.2, color: Palette.substrate, name: "Package substrate")]
         back += leftColumn
         back.append(Block(x: 0, y: 0, width: dieWidth, depth: dieDepth, z: 0, height: Self.dieTop,
-                          color: Palette.die))
+                          color: Palette.die, name: "\(Machine.model) die"))
         front = rightColumn
         parts.sort { $0.x + $0.y < $1.x + $1.y }
     }
@@ -225,14 +277,16 @@ private struct ChipModel {
     /// Adds a region plate with a grid of cells and a caption strip; returns its width and depth.
     private mutating func region(_ name: String, percent: Double?, x: Double, y: Double, count: Int,
                                  rows: Int, cell: Double, cellGap: Double,
-                                 heat: [Double?]) -> (Double, Double) {
+                                 heat: [Double?], cores: [Int] = [],
+                                 cellName: (Int) -> String) -> (Double, Double) {
+        let label = percent == nil ? name : "\(name) \(Format.percent(percent))"
         let columns = (count + rows - 1) / rows
         let cellsWidth = Double(columns) * cell + Double(columns - 1) * cellGap
         let cellsDepth = Double(rows) * cell + Double(rows - 1) * cellGap
         let width = max(cellsWidth + 2 * Self.inset, Self.minPlate)
         let depth = Self.inset + cellsDepth + Self.gap + Self.strip + Self.inset
         plates.append(Block(x: x, y: y, width: width, depth: depth, z: Self.dieTop,
-                            height: Self.plateTop - Self.dieTop, color: Palette.plate))
+                            height: Self.plateTop - Self.dieTop, color: Palette.plate, name: label))
 
         let left = x + (width - cellsWidth) / 2
         for i in 0..<count {
@@ -243,14 +297,17 @@ private struct ChipModel {
                                width: cell, depth: cell, z: Self.plateTop,
                                height: cell * (0.12 + 0.6 * fraction), color: Palette.block,
                                tint: .level(load),
-                               heat: load == nil ? 0 : min(1, 0.1 + 1.2 * fraction)))
+                               heat: load == nil ? 0 : min(1, 0.1 + 1.2 * fraction),
+                               name: heat.isEmpty ? "\(cellName(i)) · load not reported"
+                                   : "\(cellName(i)) · \(Format.percent(load))",
+                               core: i < cores.count ? cores[i] : nil))
         }
 
         // Shared cache (or, for the Neural Engine, just a label strip) along the front edge.
         let stripY = y + Self.inset + cellsDepth + Self.gap
         parts.append(Block(x: x + Self.inset, y: stripY, width: width - 2 * Self.inset,
-                           depth: Self.strip, z: Self.plateTop, height: 0.04, color: Palette.cache))
-        let label = percent == nil ? name : "\(name) \(Format.percent(percent))"
+                           depth: Self.strip, z: Self.plateTop, height: 0.04, color: Palette.cache,
+                           name: heat.isEmpty ? label : "\(label) · shared cache"))
         captions.append(Caption(text: label, x: x + Self.inset + 0.12, y: stripY + Self.strip / 2,
                                 z: Self.plateTop + 0.04, dim: heat.isEmpty))
         return (width, depth)
@@ -271,39 +328,40 @@ private struct ChipModel {
         return model.contains("Ultra") ? 8 : model.contains("Max") ? 4 : 2
     }()
 
-    func draw(in context: inout GraphicsContext, size: CGSize, labeled: Bool) {
-        let c = cos(Double.pi / 6), s = 0.5
-        func iso(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
-            CGPoint(x: (x - y) * c, y: (x + y) * s - z)
-        }
-        let blocks = back + plates + parts + front
-        var bounds = CGRect.null
-        for b in blocks {
-            for x in [b.x, b.x1] { for y in [b.y, b.y1] { for z in [b.z, b.top] {
-                bounds = bounds.union(CGRect(origin: iso(x, y, z), size: .zero))
-            } } }
-        }
-        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
-        let scale = min(size.width / bounds.width, size.height / bounds.height)
-        let offset = CGPoint(x: (size.width - bounds.width * scale) / 2 - bounds.minX * scale,
-                             y: (size.height - bounds.height * scale) / 2 - bounds.minY * scale)
-        func point(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
-            let p = iso(x, y, z)
-            return CGPoint(x: p.x * scale + offset.x, y: p.y * scale + offset.y)
-        }
-        func face(_ corners: [(Double, Double, Double)]) -> Path {
-            Path { path in path.addLines(corners.map { point($0.0, $0.1, $0.2) }); path.closeSubpath() }
-        }
+    /// Blocks in painting order, back to front.
+    private var blocks: [Block] { back + plates + parts + front }
 
-        for b in blocks {
-            let right = face([(b.x1, b.y, b.z), (b.x1, b.y1, b.z), (b.x1, b.y1, b.top), (b.x1, b.y, b.top)])
-            let near = face([(b.x, b.y1, b.z), (b.x1, b.y1, b.z), (b.x1, b.y1, b.top), (b.x, b.y1, b.top)])
+    func name(of index: Int) -> String? { blocks[index].name }
+
+    func core(of index: Int) -> Int? { blocks[index].core }
+
+    /// Index of the frontmost block drawn under `location`, if any.
+    func block(at location: CGPoint, size: CGSize) -> Int? {
+        guard let projection = Projection(blocks, size: size) else { return nil }
+        let blocks = blocks
+        return blocks.indices.last { i in
+            let b = blocks[i]
+            return [projection.top(b), projection.right(b), projection.near(b)]
+                .contains { $0.contains(location) }
+        }
+    }
+
+    func draw(in context: inout GraphicsContext, size: CGSize, labeled: Bool, highlight: Int? = nil) {
+        let blocks = blocks
+        guard let projection = Projection(blocks, size: size) else { return }
+        let c = Projection.c, s = Projection.s, scale = projection.scale
+        let point = projection.point
+        let face = projection.face
+
+        for (index, b) in blocks.enumerated() {
+            let right = projection.right(b)
+            let near = projection.near(b)
             for (side, shade) in [(right, 0.5), (near, 0.32)] {
                 context.fill(side, with: .color(b.color))
                 if b.fill >= 1 { context.fill(side, with: .color(b.tint.opacity(b.heat * 0.7))) }
                 context.fill(side, with: .color(.black.opacity(shade)))
             }
-            let top = face([(b.x, b.y, b.top), (b.x1, b.y, b.top), (b.x1, b.y1, b.top), (b.x, b.y1, b.top)])
+            let top = projection.top(b)
             context.fill(top, with: .color(b.color))
             if b.heat > 0, b.fill > 0 {
                 let edge = b.y + b.depth * min(b.fill, 1)
@@ -312,6 +370,12 @@ private struct ChipModel {
                              with: .color(b.tint.opacity(b.heat)))
             }
             context.stroke(top, with: .color(.white.opacity(0.08)), lineWidth: 0.5)
+            if index == highlight {
+                for side in [top, right, near] {
+                    context.fill(side, with: .color(.white.opacity(0.15)))
+                    context.stroke(side, with: .color(.white.opacity(0.8)), lineWidth: 1)
+                }
+            }
         }
 
         guard labeled else { return }
@@ -328,5 +392,50 @@ private struct ChipModel {
                 .foregroundColor(.white.opacity(caption.dim ? 0.4 : 0.85)),
                       at: .zero, anchor: .leading)
         }
+    }
+}
+
+/// Isometric projection of the die, scaled and centred to fit a view of the given size.
+private struct Projection {
+    static let c = cos(Double.pi / 6), s = 0.5
+    let scale: Double
+    let offset: CGPoint
+
+    init?(_ blocks: [Block], size: CGSize) {
+        var bounds = CGRect.null
+        for b in blocks {
+            for x in [b.x, b.x1] { for y in [b.y, b.y1] { for z in [b.z, b.top] {
+                bounds = bounds.union(CGRect(origin: Self.iso(x, y, z), size: .zero))
+            } } }
+        }
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return nil }
+        scale = min(size.width / bounds.width, size.height / bounds.height)
+        offset = CGPoint(x: (size.width - bounds.width * scale) / 2 - bounds.minX * scale,
+                         y: (size.height - bounds.height * scale) / 2 - bounds.minY * scale)
+    }
+
+    private static func iso(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+        CGPoint(x: (x - y) * c, y: (x + y) * s - z)
+    }
+
+    func point(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+        let p = Self.iso(x, y, z)
+        return CGPoint(x: p.x * scale + offset.x, y: p.y * scale + offset.y)
+    }
+
+    func face(_ corners: [(Double, Double, Double)]) -> Path {
+        Path { path in path.addLines(corners.map { point($0.0, $0.1, $0.2) }); path.closeSubpath() }
+    }
+
+    func top(_ b: Block) -> Path {
+        face([(b.x, b.y, b.top), (b.x1, b.y, b.top), (b.x1, b.y1, b.top), (b.x, b.y1, b.top)])
+    }
+
+    func right(_ b: Block) -> Path {
+        face([(b.x1, b.y, b.z), (b.x1, b.y1, b.z), (b.x1, b.y1, b.top), (b.x1, b.y, b.top)])
+    }
+
+    func near(_ b: Block) -> Path {
+        face([(b.x, b.y1, b.z), (b.x1, b.y1, b.z), (b.x1, b.y1, b.top), (b.x, b.y1, b.top)])
     }
 }

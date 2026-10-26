@@ -6,11 +6,14 @@ import SwiftUI
 final class DashboardState {
     var filter = ""
     var order = [KeyPathComparator(\ProcessRow.cpu, order: .reverse)]
+    var zoomedCore: Int? // CPU core shown in the transistor-level zoom, if any
 }
 
 struct DashboardView: View {
     @Bindable var monitor: Monitor
     @Bindable var state: DashboardState
+    /// Receives the content height that ends just below the chip card.
+    var fitHeight: (CGFloat) -> Void = { _ in }
 
     var body: some View {
         ScrollView {
@@ -33,16 +36,27 @@ struct DashboardView: View {
                         .frame(width: 280)
                 }
                 Card("Chip") {
-                    ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory)
+                    if let id = state.zoomedCore, let core = monitor.cores.first(where: { $0.id == id }) {
+                        CoreZoomView(core: core) { withAnimation(.snappy) { state.zoomedCore = nil } }
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    } else {
+                        ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory) { id in
+                            withAnimation(.snappy) { state.zoomedCore = id }
+                        }
                         .frame(height: 300)
-                    Text("Layout generated from the reported core counts. Height and colour show "
-                        + "load; GPU load is one figure for all cores, and the Neural Engine is not reported.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .transition(.scale(scale: 1.2).combined(with: .opacity))
+                        Text("Layout generated from the reported core counts. Height and colour show load; "
+                            + "GPU load is one figure for all cores, and the Neural Engine is not reported. "
+                            + "Click a CPU core to zoom in to its transistors.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("content")).maxY + 20 } action: { fitHeight($0) }
                 Card("Cores") { CoreGrid(cores: monitor.cores) }
                 Card("Processes") { ProcessTable(processes: monitor.processes, state: state) }
             }
             .padding(20)
+            .coordinateSpace(.named("content"))
         }
         .frame(minWidth: 760, minHeight: 640)
     }
