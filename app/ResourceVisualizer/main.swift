@@ -175,6 +175,20 @@ if let flag = CommandLine.arguments.firstIndex(of: "--export-icon"),
     exit(0)
 }
 
+#if README_MEDIA
+// `--readme-media <dir>` records the README GIFs; see scripts/readme-media.sh.
+if let flag = CommandLine.arguments.firstIndex(of: "--readme-media"),
+   CommandLine.arguments.indices.contains(flag + 1) {
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let media = ReadmeMedia(directory: URL(fileURLWithPath: CommandLine.arguments[flag + 1]))
+        media.run()
+        app.run()
+    }
+}
+#endif
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
