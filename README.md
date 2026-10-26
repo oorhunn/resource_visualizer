@@ -4,6 +4,8 @@
 
 # Resource Visualizer
 
+[![CI](https://github.com/oorhunn/resource_visualizer/actions/workflows/ci.yml/badge.svg)](https://github.com/oorhunn/resource_visualizer/actions/workflows/ci.yml)
+
 A native macOS resource monitor that lives in the notch. CPU and memory sit on either
 side of the notch; hover over it to expand a compact panel with a live model of the chip,
 memory, GPU, and the busiest processes. A full dashboard window adds history charts, a
@@ -131,6 +133,27 @@ and GPU driver statistics. It diffs them against the previous pass to get rates
 (wrapping subtraction for the 32-bit tick counters, and process start times to spot
 reused PIDs), then publishes the result as `@Observable` state that the notch, the
 dashboard, and the Dock tile all read.
+
+## CI and releases
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull
+request:
+
+- **C++ backend and terminal UI**: CMake build with warnings as errors, then `ctest`.
+- **macOS app**: debug build, a build with the README recorder enabled, then a release
+  `.app` bundle that is checked (binary, icon, `Info.plist`, signature) and uploaded as the
+  `ResourceVisualizer` artifact on the run.
+
+Pushing a tag such as `v1.2.0` also publishes a GitHub release with the zipped app,
+versioned from the tag:
+
+```sh
+git tag v1.2.0 && git push origin v1.2.0
+```
+
+The app is ad-hoc signed, not notarized, so macOS blocks it on first launch. Allow it
+with **Open Anyway** under **System Settings → Privacy & Security**, or clear the download
+quarantine with `xattr -dr com.apple.quarantine ResourceVisualizer.app`.
 
 ## Layout
 

@@ -1,9 +1,12 @@
 #!/bin/sh
 # Builds the SwiftUI app and wraps it in a signed (ad-hoc) .app bundle.
 # Usage: scripts/bundle.sh [debug|release]   → build/ResourceVisualizer.app
+# VERSION (e.g. 1.2.0) and BUILD_NUMBER set the bundle version; they default to 1.0 and 1.
 set -eu
 
 config=${1:-release}
+version=${VERSION:-1.0}
+build_number=${BUILD_NUMBER:-1}
 root=$(cd "$(dirname "$0")/.." && pwd)
 app="$root/build/ResourceVisualizer.app"
 
@@ -17,7 +20,7 @@ iconset=$(mktemp -d)/AppIcon.iconset
 "$binary" --export-icon "$iconset"
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rm -rf "$(dirname "$iconset")"
-cat > "$app/Contents/Info.plist" <<'PLIST'
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -28,8 +31,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>ResourceVisualizer</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$version</string>
+    <key>CFBundleVersion</key><string>$build_number</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key><true/>

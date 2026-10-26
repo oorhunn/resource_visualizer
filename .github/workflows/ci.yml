@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: C++ backend and terminal UI
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-Werror
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  app:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+      - name: Build (debug)
+        run: swift build
+      - name: Build with the README recorder
+        # Keeps ReadmeMedia.swift compiling; it is excluded from normal builds.
+        run: swift build --scratch-path .build/readme-media -Xswiftc -DREADME_MEDIA
+      - name: Bundle (release)
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            export VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          export BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          scripts/bundle.sh release
+      - name: Check bundle
+        run: |
+          app=build/ResourceVisualizer.app
+          test -x "$app/Contents/MacOS/ResourceVisualizer"
+          test -s "$app/Contents/Resources/AppIcon.icns"
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --strict "$app"
+      - name: Zip
+        run: ditto -c -k --keepParent build/ResourceVisualizer.app ResourceVisualizer.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ResourceVisualizer
+          path: ResourceVisualizer.zip
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [backend, app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ResourceVisualizer
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" ResourceVisualizer.zip \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
