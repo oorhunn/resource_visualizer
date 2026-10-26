@@ -41,6 +41,14 @@ open build/ResourceVisualizer.app
 
 Closing the window keeps the notch running; reopen it from the Dock icon or with ⌘1.
 
+### Dock
+
+- The app icon is drawn in code (`DockIcon.swift`); `scripts/bundle.sh` exports it to
+  `AppIcon.icns`.
+- Minimizing the dashboard turns its Dock tile into a live gauge: a ring that eases to the
+  current value over a scrolling history sparkline. Choose **CPU** or **GPU** under
+  **Resource Visualizer → Minimized Icon Shows**, or from the Dock icon's right-click menu.
+
 ## Terminal UI
 
 ```sh

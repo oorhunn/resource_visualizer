@@ -35,6 +35,7 @@ struct HistoryPoint: Identifiable {
     let id: Int
     let cpu: Double
     let memory: Double
+    let gpu: Double?
 }
 
 /// Raw counters from one backend pass; diffed against the previous pass to get rates.
@@ -164,7 +165,7 @@ final class Monitor {
         if let cpuAverage {
             historyCounter += 1
             history.append(HistoryPoint(id: historyCounter, cpu: cpuAverage,
-                                        memory: memory.usedPercent))
+                                        memory: memory.usedPercent, gpu: gpuUtilization))
             if history.count > Self.historyLength { history.removeFirst() }
         }
     }
