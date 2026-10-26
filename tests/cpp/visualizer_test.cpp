@@ -48,9 +48,11 @@ int main() {
         const auto topology = monitor::collect_core_topology();
         const auto cores = monitor::collect_cpu_cores();
         // Intel Macs report no topology; when present it must cover every core exactly once.
+        // Virtual machines (such as CI runners) may leave the core type unknown ('?').
         require(topology.empty() || topology.size() == cores.size(), "Topology covers all cores");
         for (std::size_t i = 0; i < topology.size(); ++i)
-            require(topology[i].id == i && (topology[i].type == 'P' || topology[i].type == 'E'),
+            require(topology[i].id == i && (topology[i].type == 'P' || topology[i].type == 'E' ||
+                                            topology[i].type == '?'),
                     "Topology ids and types");
         // C bridge used by the Swift app.
         rv_core bridged[256];

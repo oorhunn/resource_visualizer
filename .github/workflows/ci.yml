@@ -19,19 +19,23 @@ jobs:
     name: C++ backend and terminal UI
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-Werror
       - name: Build
         run: cmake --build build -j "$(sysctl -n hw.ncpu)"
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --output-log build/ctest.log
+      - name: Report test failures
+        # Annotations show on the run summary without opening the logs.
+        if: failure()
+        run: grep -E "FAILED|Failed|\*\*\*" build/ctest.log | sed 's/^/::error title=ctest::/' || true
 
   app:
     name: macOS app
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/cache@v4
         with:
           path: .build
