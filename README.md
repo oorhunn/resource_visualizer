@@ -72,17 +72,23 @@ reported by macOS.
 
 ![Zooming from a CPU core down to a CMOS NAND gate](docs/media/core-zoom.gif)
 
-Click a CPU core in the chip model to zoom in. Each click goes one level deeper:
+Click a CPU core in the chip model to zoom in. Every level is drawn as 3D layout in the
+style of [Electric](https://www.staticfreesoft.com/)'s 3D view: each layer is extruded at
+its own height in Electric's colours (red polysilicon, blue metal 1, magenta metal 2, gold
+metal 3), with metal see-through so the transistors stay visible. Lit channels conduct and
+lit metal carries a 1. The zoom opens on the transistors; the breadcrumbs zoom back out:
 
-1. **Pipeline**: a textbook five-stage RISC-V pipeline (fetch, decode, execute, memory,
-   write back). The share of clock slots that carry an instruction follows the real load
-   of that core; idle slots are bubbles.
+1. **NAND gate**: one cell of the adder at full size, with p+ diffusion (orange) in the
+   n-well and n+ diffusion (green) in the p-substrate, polysilicon gates crossing them,
+   contacts, rails and vias, showing which transistors conduct.
 2. **Adder**: the low four bits of the adder in the execute stage, with the carry
-   rippling from bit 0 to bit 3 for the instruction that just executed.
-3. **Full adder**: one bit built from NAND gates, with signals settling gate by gate.
-4. **NAND gate**: the four CMOS transistors, showing which ones conduct.
+   rippling from bit 0 to bit 3 for the instruction that just executed. The tiles on each
+   full adder are its nine NAND cells; click one to open its transistors.
+3. **Pipeline**: a textbook five-stage RISC-V pipeline (fetch, decode, execute, memory,
+   write back) as blocks on the die. The share of clock slots that carry an instruction
+   follows the real load of that core; idle slots are bubbles. Click Execute for the adder.
 
-Click a breadcrumb to zoom back out. Apple does not publish its core design, so this is a
+Drag to orbit the view and pinch to zoom. Apple does not publish its core design, so this is a
 teaching model rather than the real circuit; only the pipeline occupancy is live data.
 
 ## Dock

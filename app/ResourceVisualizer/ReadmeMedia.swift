@@ -102,10 +102,6 @@ final class ReadmeMedia {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { notchState?.expanded = false }
         }
         if frame == Int(6 * Self.fps) { gauge?.metric = .gpu }
-        // Zoom in: the Execute stage, then a full adder, then one of its NAND gates.
-        let clicks: [(Double, CGPoint)] = [(2.5, CGPoint(x: 360, y: 150)), (5, CGPoint(x: 438, y: 190)),
-                                           (7.5, CGPoint(x: 360, y: 200))]
-        for (time, point) in clicks where frame == Int(time * Self.fps) { click("core-zoom", at: point) }
 
         for i in scenes.indices {
             if let image = snapshot(scenes[i].view, width: scenes[i].width) { scenes[i].frames.append(image) }
@@ -115,19 +111,6 @@ final class ReadmeMedia {
         stopLoad()
         for scene in scenes { write(scene) }
         exit(0)
-    }
-
-    /// Clicks a point given from the scene's top-left corner.
-    private func click(_ name: String, at topLeft: CGPoint) {
-        guard let view = scenes.first(where: { $0.name == name })?.view, let window = view.window else { return }
-        let point = NSPoint(x: topLeft.x, y: view.bounds.height - topLeft.y)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
-                                              windowNumber: window.windowNumber, context: nil,
-                                              eventNumber: 0, clickCount: 1, pressure: 1) {
-                window.sendEvent(event)
-            }
-        }
     }
 
     private func startLoad() {
