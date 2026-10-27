@@ -31,6 +31,11 @@ struct MemorySample {
     var usedPercent: Double { total == 0 ? 0 : 100 * Double(used) / Double(total) }
 }
 
+struct DiskSample {
+    var total: UInt64 = 0, used: UInt64 = 0
+    var usedPercent: Double? { total == 0 ? nil : 100 * Double(used) / Double(total) }
+}
+
 struct HistoryPoint: Identifiable {
     let id: Int
     let cpu: Double
@@ -44,6 +49,7 @@ private struct RawSample: Sendable {
     var processes: [rv_process]
     var gpus: [rv_gpu]
     var memory: rv_memory?
+    var disk: DiskSample?
     var time: ContinuousClock.Instant
 }
 
@@ -63,7 +69,18 @@ private func readSample() -> RawSample {
     var memory = rv_memory()
     let hasMemory = rv_memory_stats(&memory)
     return RawSample(cores: cores, processes: processes, gpus: gpus,
-                     memory: hasMemory ? memory : nil, time: .now)
+                     memory: hasMemory ? memory : nil, disk: readDisk(), time: .now)
+}
+
+/// Startup volume usage. Purgeable space counts as free, matching Finder.
+private func readDisk() -> DiskSample? {
+    let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey,
+                                     .volumeAvailableCapacityForImportantUsageKey]
+    guard let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: keys),
+          let total = values.volumeTotalCapacity, total > 0,
+          let available = values.volumeAvailableCapacityForImportantUsage else { return nil }
+    let free = UInt64(clamping: max(0, min(available, Int64(total))))
+    return DiskSample(total: UInt64(total), used: UInt64(total) - free)
 }
 
 private func string<T>(_ tuple: T) -> String {
@@ -82,6 +99,7 @@ final class Monitor {
     private(set) var processes: [ProcessSample] = []
     private(set) var gpus: [GpuSample] = []
     private(set) var memory = MemorySample()
+    private(set) var disk = DiskSample()
     private(set) var history: [HistoryPoint] = []
     private(set) var cpuAverage: Double?
 
@@ -141,6 +159,8 @@ final class Monitor {
                                   compressed: m.compressed, cached: m.cached,
                                   swapUsed: m.swap_used, swapTotal: m.swap_total)
         }
+
+        if let d = raw.disk { disk = d }
 
         var oldProcesses: [Int32: rv_process] = [:]
         for process in before?.processes ?? [] { oldProcesses[process.pid] = process }

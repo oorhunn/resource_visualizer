@@ -5,7 +5,7 @@ import SwiftUI
 /// Where the notch is on a screen, in AppKit screen coordinates (origin bottom-left).
 struct NotchGeometry: Equatable {
     static let wingWidth: CGFloat = 76
-    static let expandedSize = CGSize(width: 620, height: 200)
+    static let expandedSize = CGSize(width: 720, height: 200)
 
     let screenFrame: NSRect
     let notchWidth: CGFloat // 0 on screens without a notch
@@ -234,6 +234,16 @@ private struct NotchPanel: View {
                         stat("GPU", Format.percent(monitor.gpuUtilization), monitor.gpuUtilization)
                         Meter(monitor.gpuUtilization.map { $0 / 100 },
                               color: .level(monitor.gpuUtilization))
+                    }
+                    .frame(width: 80)
+                    VStack(alignment: .leading, spacing: 6) {
+                        stat("Disk", Format.percent(monitor.disk.usedPercent),
+                             monitor.disk.usedPercent)
+                        Meter(monitor.disk.usedPercent.map { $0 / 100 },
+                              color: .level(monitor.disk.usedPercent))
+                        Text(monitor.disk.total == 0 ? "–"
+                             : "\(Format.bytes(monitor.disk.total - monitor.disk.used)) free")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(width: 80)
                 }
