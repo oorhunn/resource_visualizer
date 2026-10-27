@@ -532,8 +532,8 @@ private struct Scene {
 
     func draw(in context: inout GraphicsContext, highlight: Level?) {
         context.fill(Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 8), with: .color(Ink.background))
-        let corners = boxes.map { corners($0.lo, $0.hi).map(projection.point) }
-        for i in paintOrder(corners) { drawBox(&context, boxes[i], corners[i]) }
+        let projected = boxes.map { corners($0.lo, $0.hi).map(projection.point) }
+        for i in paintOrder(projected) { drawBox(&context, boxes[i], projected[i]) }
 
         for target in targets where target.level == highlight {
             let path = outline(target.lo, target.hi)
