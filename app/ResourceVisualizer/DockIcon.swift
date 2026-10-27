@@ -204,7 +204,9 @@ final class DockGaugeView: NSView {
     }
 }
 
-/// Animates a window's Dock tile while it is minimized; the app icon stays static.
+/// Animates a window's Dock tile while it is minimized; the app icon stays static. With
+/// "Minimize windows into application icon" on, the window has no tile of its own, so the app
+/// icon shows the gauge instead until the window is restored.
 @MainActor
 final class DockGauge {
     static let sparklinePoints = 24
@@ -214,6 +216,7 @@ final class DockGauge {
         didSet {
             view.metric = metric
             refresh()
+            tile?.display()
         }
     }
 
@@ -222,6 +225,7 @@ final class DockGauge {
     private let view = DockGaugeView()
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private var tile: NSDockTile?
     private var lastPointID: Int?
     private var pointArrived = Date.distantPast
 
@@ -230,7 +234,6 @@ final class DockGauge {
         self.monitor = monitor
         self.metric = metric
         view.metric = metric
-        window.dockTile.contentView = view
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: NSWindow.willMiniaturizeNotification, object: window,
@@ -244,12 +247,24 @@ final class DockGauge {
         ]
     }
 
+    private static var minimizesIntoAppIcon: Bool {
+        UserDefaults(suiteName: "com.apple.dock")?.bool(forKey: "minimize-to-application") ?? false
+    }
+
     private func start() {
+        // Read the Dock setting on every minimize, since it can change while the app runs.
+        let tile = Self.minimizesIntoAppIcon ? NSApp.dockTile : window.dockTile
+        if tile !== self.tile {
+            self.tile?.contentView = nil
+            self.tile?.display()
+            tile.contentView = view
+            self.tile = tile
+        }
         // Jump straight to the current value so the tile is right the moment it lands in the Dock.
         refresh()
         view.displayed = view.current ?? 0
         view.scroll = 1
-        window.dockTile.display()
+        tile.display()
         guard timer == nil else { return }
         let timer = Timer(timeInterval: 1 / Self.frameRate, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -261,6 +276,12 @@ final class DockGauge {
     private func stop() {
         timer?.invalidate()
         timer = nil
+        // Give the app icon back; a window tile is only visible while minimized anyway.
+        if tile === NSApp.dockTile {
+            tile?.contentView = nil
+            tile?.display()
+            tile = nil
+        }
     }
 
     private func refresh() {
@@ -282,6 +303,6 @@ final class DockGauge {
         if abs(target - view.displayed) < 0.05 { view.displayed = target }
         view.scroll = CGFloat(min(Date().timeIntervalSince(pointArrived) / max(monitor.interval, 0.1), 1))
         // Redraw only while something is moving.
-        if before != (view.displayed, view.scroll) { window.dockTile.display() }
+        if before != (view.displayed, view.scroll) { tile?.display() }
     }
 }

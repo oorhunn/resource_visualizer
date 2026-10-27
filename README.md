@@ -95,6 +95,8 @@ teaching model rather than the real circuit; only the pipeline occupancy is live
   current value over a scrolling history sparkline. Choose **CPU** or **GPU** under
   **Resource Visualizer → Minimized Icon Shows**, or from the Dock icon's right-click menu.
   The choice is remembered. The tile only redraws while the window is minimized.
+  With **Minimize windows into application icon** turned on in Dock settings, the window has
+  no tile of its own, so the app icon shows the gauge until the window is restored.
 
 ## Terminal UI
 
