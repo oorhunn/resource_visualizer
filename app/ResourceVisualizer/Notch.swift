@@ -42,46 +42,61 @@ final class NotchState {
 }
 
 /// Borderless panel that floats over the menu bar around the notch and expands on hover.
+///
+/// Hover is detected with tracking areas rather than a system-wide mouse-move monitor, so the
+/// app only hears about the pointer when it crosses the notch or the expanded panel.
 @MainActor
 final class NotchController {
     private let panel: NSPanel
+    /// Catches the pointer over the collapsed notch while `panel` lets clicks through.
+    private let trigger: NSPanel
     private let state: NotchState
-    private var monitors: [Any] = []
+    private let triggerTracker = HoverTracker()
+    private let panelTracker = HoverTracker()
     private var screenObserver: NSObjectProtocol?
     private var collapseWork: DispatchWorkItem?
 
     init(monitor: Monitor, openDashboard: @escaping () -> Void) {
         state = NotchState(geometry: NotchGeometry(screen: Self.preferredScreen()))
-        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.level = .init(Int(CGWindowLevelForKey(.mainMenuWindow)) + 3)
-        // Not .fullScreenAuxiliary, so it stays out of the way of full-screen apps.
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        panel.isMovable = false
+        panel = Self.makePanel(level: Int(CGWindowLevelForKey(.mainMenuWindow)) + 3)
         panel.ignoresMouseEvents = true
 
         let hosting = NSHostingView(rootView: NotchView(monitor: monitor, state: state,
                                                         openDashboard: openDashboard))
         hosting.sizingOptions = []
         panel.contentView = hosting
+
+        // Sits just under the panel, which draws the notch over it. A fully transparent window
+        // would let the pointer through, so it gets an invisible sliver of alpha.
+        trigger = Self.makePanel(level: Int(CGWindowLevelForKey(.mainMenuWindow)) + 2)
+        let catcher = NSView()
+        catcher.wantsLayer = true
+        catcher.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.01).cgColor
+        trigger.contentView = catcher
+
+        triggerTracker.onEnter = { [weak self] in self?.setExpanded(true) }
+        triggerTracker.attach(to: catcher)
+        panelTracker.onEnter = { [weak self] in self?.cancelCollapse() }
+        panelTracker.onExit = { [weak self] in self?.scheduleCollapse() }
         layout()
     }
 
+    private static func makePanel(level: Int) -> NSPanel {
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.level = .init(level)
+        // Not .fullScreenAuxiliary, so it stays out of the way of full-screen apps.
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        panel.isMovable = false
+        return panel
+    }
+
     func show() {
+        trigger.orderFrontRegardless()
         panel.orderFrontRegardless()
-        let handler: (NSEvent) -> Void = { [weak self] _ in self?.trackMouse() }
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved], handler: handler) {
-            monitors.append(global)
-        }
-        if let local = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { event in
-            handler(event)
-            return event
-        }) {
-            monitors.append(local)
-        }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -90,12 +105,11 @@ final class NotchController {
     }
 
     func hide() {
-        monitors.forEach(NSEvent.removeMonitor)
-        monitors.removeAll()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
         setExpanded(false)
         panel.orderOut(nil)
+        trigger.orderOut(nil)
     }
 
     /// Prefer the built-in display, which is the one with the notch.
@@ -109,34 +123,61 @@ final class NotchController {
         let size = CGSize(width: NotchGeometry.expandedSize.width,
                           height: NotchGeometry.expandedSize.height + state.geometry.height)
         panel.setFrame(state.geometry.rect(size), display: true)
+        trigger.setFrame(state.geometry.rect(state.geometry.collapsedSize), display: false)
     }
 
-    private func trackMouse() {
-        let point = NSEvent.mouseLocation
-        let geometry = state.geometry
-        if state.expanded {
-            let size = CGSize(width: NotchGeometry.expandedSize.width,
-                              height: NotchGeometry.expandedSize.height + geometry.height)
-            if geometry.rect(size).insetBy(dx: -8, dy: -8).contains(point) {
-                collapseWork?.cancel()
-                collapseWork = nil
-            } else if collapseWork == nil {
-                let work = DispatchWorkItem { [weak self] in self?.setExpanded(false) }
-                collapseWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
-            }
-        } else if geometry.rect(geometry.collapsedSize).contains(point) {
-            setExpanded(true)
-        }
+    private func scheduleCollapse() {
+        guard state.expanded, collapseWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.setExpanded(false) }
+        collapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func cancelCollapse() {
+        collapseWork?.cancel()
+        collapseWork = nil
     }
 
     private func setExpanded(_ expanded: Bool) {
-        collapseWork?.cancel()
-        collapseWork = nil
+        cancelCollapse()
         guard state.expanded != expanded else { return }
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { state.expanded = expanded }
         panel.ignoresMouseEvents = !expanded
+        if expanded, let view = panel.contentView {
+            // The pointer is already over the panel, so only its exit is reported.
+            panelTracker.attach(to: view, assumeInside: true)
+        } else {
+            panelTracker.detach()
+        }
     }
+}
+
+/// Owns one tracking area that reports the pointer entering and leaving a view.
+@MainActor
+private final class HoverTracker: NSResponder {
+    var onEnter: (() -> Void)?
+    var onExit: (() -> Void)?
+    private var area: NSTrackingArea?
+    private weak var view: NSView?
+
+    func attach(to view: NSView, assumeInside: Bool = false) {
+        detach()
+        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]
+        if assumeInside { options.insert(.assumeInside) }
+        let area = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
+        view.addTrackingArea(area)
+        self.area = area
+        self.view = view
+    }
+
+    func detach() {
+        if let area { view?.removeTrackingArea(area) }
+        area = nil
+        view = nil
+    }
+
+    override func mouseEntered(with event: NSEvent) { onEnter?() }
+    override func mouseExited(with event: NSEvent) { onExit?() }
 }
 
 struct NotchView: View {
