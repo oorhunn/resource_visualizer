@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 
-/// Illustrative zoom into one CPU core: the low four bits of its adder as one plane of 3D layout
-/// in the style of Electric's 3D view, all 36 NAND cells drawn down to their transistors and
-/// wired together. Drag to orbit, pinch to zoom in on a part. Apple does not publish its core
-/// design, so this is a teaching model rather than the real circuit; the adder works on
+/// Illustrative zoom into one CPU core: a die of 256 lanes of 64-bit adders, laid out as 3D layout
+/// in the style of Electric's 3D view, every one of its 147,456 NAND cells down to the transistors.
+/// It opens on the whole die; pinch, scroll or double-click to zoom in, drag to orbit. Only what is
+/// on screen is built, and in only as much detail as it shows at that size. Apple does not publish
+/// its core design, so this is a teaching model rather than the real circuit; the adders work on
 /// instructions clocked through a textbook pipeline, which issues as often as the core's load.
 struct CoreZoomView: View {
     let core: CoreSample
@@ -18,17 +20,20 @@ struct CoreZoomView: View {
             TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
                 GeometryReader { geometry in
                     let scene = Scene(pipeline: pipeline, date: timeline.date, size: geometry.size,
-                                      camera: view.camera)
+                                      camera: view.camera(at: timeline.date), die: view.die)
                     Canvas { context, _ in scene.draw(in: &context) }
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .background(ScrollCatcher { event, point in scroll(event, at: point) })
                         .gesture(orbit)
-                        .simultaneousGesture(pinch(in: geometry.size))
+                        .simultaneousGesture(pinch)
+                        .onTapGesture(count: 2) { point in zoom(by: 4, at: point) }
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { view.size = $0 }
                 }
             }
             .frame(height: 360)
             .overlay(alignment: .topTrailing) { controls }
             .accessibilityElement()
-            .accessibilityLabel("\(coreName) adder")
+            .accessibilityLabel("\(coreName) adders")
             .accessibilityValue(caption)
             Text(caption).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -45,6 +50,7 @@ struct CoreZoomView: View {
     private var orbit: some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { drag in
+                if view.dragStart == nil { view.land() }
                 let start = view.dragStart ?? view.camera
                 view.dragStart = start
                 view.camera.yaw = start.yaw - drag.translation.width * 0.008
@@ -54,29 +60,50 @@ struct CoreZoomView: View {
     }
 
     /// Zooms about the point between the fingers, so pinching over a cell opens it up.
-    private func pinch(in size: CGSize) -> some Gesture {
+    private var pinch: some Gesture {
         MagnifyGesture()
             .onChanged { pinch in
+                if view.pinchStart == nil { view.land() }
                 let start = view.pinchStart ?? view.camera
                 view.pinchStart = start
-                let zoom = min(max(start.zoom * pinch.magnification, 1), 12), k = zoom / start.zoom
-                let ax = pinch.startLocation.x - size.width / 2, ay = pinch.startLocation.y - size.height / 2
-                // Keep the plane in view: it may only move as far as it has grown.
-                let reach = (zoom - 1) / 2
-                view.camera.zoom = zoom
-                view.camera.panX = min(max(ax - (ax - start.panX) * k, -reach * size.width), reach * size.width)
-                view.camera.panY = min(max(ay - (ay - start.panY) * k, -reach * size.height), reach * size.height)
+                view.camera = start.zoomed(by: pinch.magnification, about: pinch.startLocation, in: view.size)
             }
             .onEnded { _ in view.pinchStart = nil }
     }
 
+    /// Flies the view in or out about a point, the middle of the view if none is given.
+    private func zoom(by k: Double, at point: CGPoint? = nil) {
+        let point = point ?? CGPoint(x: view.size.width / 2, y: view.size.height / 2)
+        view.fly(to: view.camera(at: .now).zoomed(by: k, about: point, in: view.size))
+    }
+
+    /// Two-finger scrolling pans a zoomed view; a mouse wheel zooms about the pointer. Scrolling
+    /// over the whole die is left to the dashboard, so it still scrolls past.
+    private func scroll(_ event: NSEvent, at point: CGPoint) -> Bool {
+        if event.hasPreciseScrollingDeltas {
+            guard view.camera.zoom > 1 else { return false }
+            view.land()
+            view.camera.panX += event.scrollingDeltaX
+            view.camera.panY += event.scrollingDeltaY
+            view.camera = view.camera.clamped(in: view.size)
+        } else {
+            view.land()
+            view.camera = view.camera.zoomed(by: pow(1.15, event.scrollingDeltaY), about: point, in: view.size)
+        }
+        return true
+    }
+
     private var controls: some View {
         HStack(spacing: 12) {
+            Button { zoom(by: 0.25) } label: { Image(systemName: "minus.magnifyingglass") }
+                .help("Zoom out")
+                .disabled(view.camera.zoom <= 1)
+            Button { zoom(by: 4) } label: { Image(systemName: "plus.magnifyingglass") }
+                .help("Zoom in")
+                .disabled(view.camera.zoom >= Camera.maxZoom)
             if view.camera != Camera() {
-                Button { withAnimation(.snappy) { view.camera = Camera() } } label: {
-                    Image(systemName: "arrow.counterclockwise")
-                }
-                .help("Reset view")
+                Button { view.fly(to: Camera()) } label: { Image(systemName: "arrow.counterclockwise") }
+                    .help("Show the whole die")
             }
             Button(action: exit) { Image(systemName: "xmark") }
                 .help("Back to the chip")
@@ -91,23 +118,47 @@ struct CoreZoomView: View {
     }
 
     private var caption: String {
-        let instruction = pipeline.executed
-        let result = Adder(instruction).result
+        let instruction = pipeline.executed, (a, b) = instruction.operands(lane: 0)
         let idle = pipeline.stages[2] == nil ? "Execute holds a bubble, so this shows the last instruction. " : ""
-        return idle + "\(coreName) adding the low 4 bits of \(instruction.text): \(binary(instruction.a)) "
-            + "\(instruction.subtract ? "−" : "+") \(binary(instruction.b)) = \(binary(result)). "
-            + "Each row is one full adder of nine NAND cells, PMOS in the n-well above NMOS in the p-substrate, "
-            + "wired through the channel above it on metal 2 and 3; the carry ripples down from bit 0 to bit 3. "
-            + "Lit channels conduct and lit metal carries a 1. Instructions arrive as often as this core's load "
-            + "(\(Format.percent(core.busy))) allows. Drag to orbit; pinch over a cell to see its transistors."
+        return idle + "\(coreName) running \(instruction.text) on all \(Die.lanes) lanes at once. Lane 0: "
+            + "\(hex(a)) \(instruction.subtract ? "−" : "+") \(hex(b)) = \(hex(pipeline.result(lane: 0))). "
+            + "Each lane is a 64-bit ripple-carry adder, one full adder of nine NAND cells per row: "
+            + "\(Die.cells.formatted()) cells and \(Die.transistors.formatted()) transistors in all. "
+            + "Lit cells drive a 1, and the carry ripples down every lane from bit 0 to bit 63. "
+            + "Instructions arrive as often as this core's load (\(Format.percent(core.busy))) allows. "
+            + "Pinch, scroll or double-click to zoom in down to the transistors; drag to orbit."
     }
 }
 
 @MainActor
 private final class ViewState: ObservableObject {
+    static let flightTime = 0.45 // seconds
+
     @Published var camera = Camera()
     var dragStart: Camera?
     var pinchStart: Camera?
+    var size = CGSize(width: 1, height: 1)
+    let die = DieImage()
+    private var flight: (from: Camera, start: Date)?
+
+    /// The camera to draw at a moment: on its way to `camera` if it is flying there.
+    func camera(at date: Date) -> Camera {
+        guard let flight else { return camera }
+        let t = date.timeIntervalSince(flight.start) / Self.flightTime
+        guard t < 1 else { return camera }
+        return flight.from.interpolated(to: camera, 1 - pow(1 - max(t, 0), 3))
+    }
+
+    func fly(to target: Camera) {
+        flight = (camera(at: .now), .now)
+        camera = target
+    }
+
+    /// Stops a flight where it is, so a gesture picks the view up from what is on screen.
+    func land() {
+        camera = camera(at: .now)
+        flight = nil
+    }
 }
 
 /// Clocks instructions through five stages. Each clock issues an instruction when enough load has
@@ -121,8 +172,10 @@ private final class Pipeline: ObservableObject {
     @Published private(set) var slots: [Bool] = [] // newest first
     private(set) var edge = Date.now                // last clock edge
     private(set) var executed = Instruction.make(0) // last instruction through Execute
-    private(set) var previous: Instruction?         // the one before it
     private(set) var executedAt = Date.distantPast  // when it entered Execute
+    /// Every row's signals for the last instruction through Execute and the one before it.
+    private(set) var signals = Die.signals(Instruction.make(0))
+    private(set) var previousSignals = Die.signals(Instruction.make(0))
     var load = 0.0
     private var credit = 0.0, issued = 1
     private var timer: Task<Void, Never>?
@@ -142,6 +195,11 @@ private final class Pipeline: ObservableObject {
         timer = nil
     }
 
+    /// One lane's sum, read off the sum outputs of its rows.
+    func result(lane: Int) -> UInt64 {
+        (0..<Die.bits).reduce(0) { $0 | UInt64(signals[lane * Die.bits + $1] >> 10 & 1) << $1 }
+    }
+
     private func step() {
         credit += min(max(load, 0), 1)
         var next: Instruction?
@@ -152,9 +210,10 @@ private final class Pipeline: ObservableObject {
         }
         edge = .now
         if let current = stages[1] {
-            previous = executed
             executed = current
             executedAt = edge
+            previousSignals = signals
+            signals = Die.signals(current)
         }
         slots = Array(([next != nil] + slots).prefix(Self.slotCount))
         stages = [next] + stages.dropLast()
@@ -162,25 +221,36 @@ private final class Pipeline: ObservableObject {
 }
 
 private struct Instruction {
+    let serial: Int
     let text: String
-    let a: Int, b: Int // low four bits of the adder's operands
     let subtract: Bool
-
-    var mnemonic: String { String(text.prefix { $0 != " " }) }
-    var operands: String { String(text.drop { $0 != " " }.dropFirst()) }
+    let immediate: UInt64?
 
     /// A short loop body. Register values are made up; immediates are the ones in the text.
-    private static let program: [(String, Bool, Int?)] = [
+    private static let program: [(String, Bool, UInt64?)] = [
         ("addi x5, x5, 1", false, 1), ("add x6, x6, x5", false, nil), ("lw x7, 8(x10)", false, 8),
         ("sub x8, x7, x6", true, nil), ("sw x8, 4(x10)", false, 4), ("bne x5, x11, loop", true, nil),
     ]
 
     static func make(_ serial: Int) -> Instruction {
         let (text, subtract, immediate) = program[serial % program.count]
-        let mix = ((serial &+ 1) &* 2_654_435_761) >> 8 // varied but repeatable register values
-        return Instruction(text: text, a: mix & 15, b: immediate.map { $0 & 15 } ?? (mix >> 4) & 15,
-                           subtract: subtract)
+        return Instruction(serial: serial, text: text, subtract: subtract, immediate: immediate)
     }
+
+    /// The operands one lane adds: its own made-up register values, varied but repeatable, and
+    /// the immediate shared by every lane.
+    func operands(lane: Int) -> (UInt64, UInt64) {
+        let a = mix(UInt64(serial) << 16 | UInt64(lane))
+        return (a, immediate ?? mix(a))
+    }
+}
+
+/// SplitMix64's finaliser: spreads a counter into well-mixed bits.
+private func mix(_ x: UInt64) -> UInt64 {
+    var z = x &+ 0x9E37_79B9_7F4A_7C15
+    z = (z ^ z >> 30) &* 0xBF58_476D_1CE4_E5B9
+    z = (z ^ z >> 27) &* 0x94D0_49BB_1331_11EB
+    return z ^ z >> 31
 }
 
 /// A full adder as nine two-input NAND gates. Signals 0–2 are a, b and carry in; gate i drives
@@ -188,71 +258,159 @@ private struct Instruction {
 private enum FullAdder {
     static let gates = [(0, 1), (0, 3), (1, 3), (4, 5), (6, 2), (6, 7), (2, 7), (8, 9), (7, 3)]
 
-    static func signals(_ a: Bool, _ b: Bool, _ carry: Bool) -> [Bool] {
-        var s = [a, b, carry]
-        for (x, y) in gates { s.append(!(s[x] && s[y])) }
+    /// All twelve signals as bits of one mask, signal i in bit i.
+    static func signals(_ a: Bool, _ b: Bool, _ carry: Bool) -> UInt16 {
+        var s: UInt16 = (a ? 1 : 0) | (b ? 2 : 0) | (carry ? 4 : 0)
+        for (i, (x, y)) in gates.enumerated() where s >> x & s >> y & 1 == 0 { s |= 1 << (3 + i) }
         return s
     }
-
-    static func name(_ signal: Int) -> String { signal < 3 ? ["a", "b", "carry in"][signal] : "N\(signal - 2)" }
 }
 
-/// Four ripple-carry full adders; subtraction inverts b and sets the carry in.
-private struct Adder {
-    var a: [Bool] = [], b: [Bool] = [], carry: [Bool], sum: [Bool] = [] // bit 0 first
+/// The die: a grid of lanes, each one 64-bit ripple-carry adder laid out as a column of 64 rows,
+/// one full adder of nine NAND cells per row with bit 0 on top. Sizes are in λ.
+private enum Die {
+    static let columns = 64, laneRows = 4, bits = 64
+    static let lanes = columns * laneRows
+    static let cells = lanes * bits * 9, transistors = cells * 4
 
-    init(_ instruction: Instruction) {
-        let operand = instruction.subtract ? ~instruction.b & 15 : instruction.b
-        carry = [instruction.subtract]
-        for bit in 0..<4 {
-            a.append(instruction.a >> bit & 1 == 1)
-            b.append(operand >> bit & 1 == 1)
-            let s = FullAdder.signals(a[bit], b[bit], carry[bit])
-            sum.append(s[10])
-            carry.append(s[11])
+    static let pitch = 36.0                  // cell to cell along a row, leaving a 10 λ gap for risers
+    static let rowEnd = 8 * pitch + 26       // right edge of the last cell
+    static let carryX = 8 * pitch + 28       // riser of the last cell, N9, which gives the carry out
+    static let left = -16.0, right = rowEnd + 16
+    static let trackPitch = 3.0
+
+    /// A wire in a row's routing channel: a trunk on metal 2 along one track, reached on metal 3
+    /// from its source and down to each cell input it drives.
+    struct Wire {
+        var signal: Int
+        var from: Double                 // x of its source: a riser, or the row's left edge
+        var pins: [(gate: Int, b: Bool)] // the cell inputs it drives
+        var exits = false                // runs on to the right edge: the sum, and the last carry
+        var track = 0
+
+        var span: (Double, Double) {
+            let xs = [from] + pins.map { Die.pinX($0.gate, b: $0.b) } + (exits ? [Die.right] : [])
+            return (xs.min()!, xs.max()!)
         }
     }
 
-    func signals(bit: Int) -> [Bool] { FullAdder.signals(a[bit], b[bit], carry[bit]) }
-    var result: Int { sum.enumerated().reduce(0) { $0 | ($1.element ? 1 << $1.offset : 0) } }
+    /// The riser beside a cell input: B just left of the cell, A left of that.
+    static func pinX(_ gate: Int, b: Bool) -> Double { Double(gate) * pitch - (b ? 2.5 : 5) }
+
+    /// The wires of the first row, which takes the carry in from the left edge, a middle row, and
+    /// the last, whose carry out leaves on the right instead of dropping to the next row.
+    private static let kinds = [wires(first: true, last: false), wires(first: false, last: false),
+                                wires(first: false, last: true)]
+
+    static func wires(bit: Int) -> [Wire] { kinds[bit == 0 ? 0 : bit == bits - 1 ? 2 : 1] }
+
+    /// One row's wires, packed onto as few tracks as possible.
+    private static func wires(first: Bool, last: Bool) -> [Wire] {
+        var wires: [Wire] = []
+        for signal in 0..<(last ? 12 : 11) {
+            var pins: [(gate: Int, b: Bool)] = []
+            for (gate, (x, y)) in FullAdder.gates.enumerated() {
+                if x == signal { pins.append((gate, false)) }
+                if y == signal { pins.append((gate, true)) }
+            }
+            let from = signal < 2 || (signal == 2 && first) ? left
+                : signal == 2 || signal == 11 ? carryX : Double(signal - 3) * pitch + 28
+            wires.append(Wire(signal: signal, from: from, pins: pins, exits: signal >= 10))
+        }
+        var ends: [Double] = []
+        for i in wires.indices.sorted(by: { wires[$0].span.0 < wires[$1].span.0 }) {
+            let (start, end) = wires[i].span
+            if let free = ends.firstIndex(where: { $0 + 3 < start }) {
+                wires[i].track = free
+                ends[free] = end
+            } else {
+                wires[i].track = ends.count
+                ends.append(end)
+            }
+        }
+        return wires
+    }
+
+    static let channel = Double(kinds.flatMap { $0.map(\.track) }.max()! + 1) * trackPitch + 2.5
+    static let rowPitch = channel + 31
+    static func trackY(_ track: Int) -> Double { -3.5 - Double(track) * trackPitch } // above the row
+
+    /// A lane has a spare cell's width on either side for its inputs and outputs, and a spare row
+    /// above and below; the one above holds its name.
+    static let laneWidth = 11 * pitch, laneHeight = Double(bits + 2) * rowPitch
+    static let width = Double(columns) * laneWidth, height = Double(laneRows) * laneHeight
+
+    static func origin(_ lane: Int) -> SIMD2<Double> {
+        [Double(lane % columns) * laneWidth, Double(lane / columns) * laneHeight]
+    }
+
+    /// Maps a row's own coordinates into the die's: cells from x = 0, the routing channel above y = 0.
+    static func row(_ lane: Int, _ bit: Int) -> Place {
+        let o = origin(lane)
+        return Place(x: o.x + pitch, y: o.y + Double(bit + 1) * rowPitch + channel)
+    }
+
+    /// Every row of every lane for an instruction, as signal masks, lane by lane from bit 0.
+    /// Subtraction inverts b and sets the carry in.
+    static func signals(_ instruction: Instruction) -> [UInt16] {
+        var signals = [UInt16](repeating: 0, count: lanes * bits)
+        for lane in 0..<lanes {
+            let (a, operand) = instruction.operands(lane: lane), b = instruction.subtract ? ~operand : operand
+            var carry = instruction.subtract
+            for bit in 0..<bits {
+                let s = FullAdder.signals(a >> bit & 1 == 1, b >> bit & 1 == 1, carry)
+                signals[lane * bits + bit] = s
+                carry = s >> 11 & 1 == 1
+            }
+        }
+        return signals
+    }
 }
 
 /// Every adder signal at a moment after a new instruction reaches Execute. Each NAND gate takes
-/// one gate delay to follow its inputs, so new values ripple through the network, and through
-/// the carry chain from bit 0 to bit 3, instead of appearing all at once.
+/// one gate delay to follow its inputs, so new values ripple through each row, and down the carry
+/// chain from bit 0 to bit 63, instead of appearing all at once. The timing does not depend on
+/// the values, so it is worked out once for all lanes.
 private struct Settle {
-    static let delay = 0.05 // seconds per gate, slowed down about ten billion times
+    /// Seconds per gate: the whole carry chain settles within 0.7 s of the 0.9 s clock, about
+    /// half a billion times slower than a real gate.
+    static let delay = 0.7 / steps[(bits - 1) * 12 + 11]
+    private static let bits = Die.bits
 
-    private let new: [[Bool]], old: [[Bool]]
-    private var times: [[Double]] = [] // when each signal takes its new value
-    private let elapsed: Double
-
-    init(_ instruction: Instruction, before previous: Instruction?, elapsed: Double) {
-        let adder = Adder(instruction)
-        new = (0..<4).map { adder.signals(bit: $0) }
-        old = previous.map { prev in (0..<4).map { Adder(prev).signals(bit: $0) } } ?? new
-        self.elapsed = elapsed
-        for bit in 0..<4 {
-            var t = [0, 0, bit == 0 ? 0 : times[bit - 1][11]]
-            for (x, y) in FullAdder.gates { t.append(max(t[x], t[y]) + Self.delay) }
-            times.append(t)
+    /// When each signal of each row takes its new value, in gate delays; row by row, 12 a row.
+    private static let steps: [Double] = {
+        var t: [Double] = []
+        for bit in 0..<bits {
+            var row = [0, 0, bit == 0 ? 0 : t[(bit - 1) * 12 + 11]]
+            for (x, y) in FullAdder.gates { row.append(max(row[x], row[y]) + 1) }
+            t += row
         }
+        return t
+    }()
+    private static let times = steps.map { $0 * delay }
+
+    let new: [UInt16], old: [UInt16]
+    let elapsed: Double
+
+    func value(_ lane: Int, _ bit: Int, _ signal: Int) -> Bool {
+        let row = lane * Self.bits + bit
+        return (elapsed >= Self.times[bit * 12 + signal] ? new[row] : old[row]) >> signal & 1 == 1
     }
 
-    func signals(bit: Int) -> [Bool] { (0..<new[bit].count).map { value(bit, $0) } }
-
-    func value(_ bit: Int, _ signal: Int) -> Bool { elapsed >= times[bit][signal] ? new[bit][signal] : old[bit][signal] }
-
     /// 1 just as a signal changes, fading to 0 over a third of a second.
-    func flash(_ bit: Int, _ signal: Int) -> Double {
-        let age = elapsed - times[bit][signal]
-        return new[bit][signal] != old[bit][signal] && age >= 0 && age < 0.35 ? 1 - age / 0.35 : 0
+    func flash(_ lane: Int, _ bit: Int, _ signal: Int) -> Double {
+        guard let age = age(lane, bit, signal), age < 0.35 else { return 0 }
+        return 1 - age / 0.35
     }
 
     /// Seconds since a signal changed, or nil if it did not.
-    func age(_ bit: Int, _ signal: Int) -> Double? {
-        new[bit][signal] != old[bit][signal] && elapsed >= times[bit][signal] ? elapsed - times[bit][signal] : nil
+    func age(_ lane: Int, _ bit: Int, _ signal: Int) -> Double? {
+        let row = lane * Self.bits + bit, time = Self.times[bit * 12 + signal]
+        return (new[row] ^ old[row]) >> signal & 1 == 1 && elapsed >= time ? elapsed - time : nil
     }
+
+    /// Whether anything is still switching or fading.
+    var settled: Bool { elapsed > 0.7 + 0.35 }
 }
 
 private enum Ink {
@@ -280,6 +438,18 @@ private struct Tint: Equatable {
         Tint(r + (other.r - r) * t, g + (other.g - g) * t, b + (other.b - b) * t)
     }
     func color(_ opacity: Double = 1) -> Color { Color(red: r, green: g, blue: b, opacity: opacity) }
+
+    /// On a net: full while it carries a 1, dark at 0, and whitened as a new value arrives.
+    /// Dimmed while Execute holds a bubble.
+    func lit(_ net: Net, idle: Bool) -> Tint {
+        (net.on ? scaled(idle ? 0.8 : 1) : scaled(0.4)).mixed(.white, 0.85 * net.flash)
+    }
+
+    /// Red, green and blue bytes.
+    var bytes: (UInt8, UInt8, UInt8) {
+        func byte(_ x: Double) -> UInt8 { UInt8(min(max(x, 0), 1) * 255) }
+        return (byte(r), byte(g), byte(b))
+    }
 }
 
 /// Layout layers in the colours of Electric's MOSIS CMOS technology, with heights in λ. Contacts
@@ -374,10 +544,41 @@ private struct Label {
 }
 
 /// Orbit camera. Yaw turns the layout about its vertical axis; pitch 0 looks from the side and
-/// π/2 straight down. Pan moves the zoomed view on screen, in points.
+/// π/2 straight down. Zoom 1 fits the whole die; pan moves the zoomed view on screen, in points.
 struct Camera: Equatable {
+    static let maxZoom = 800.0 // a NAND cell about half the view wide
+
     var yaw = -0.06, pitch = 1.05, zoom = 1.0
     var panX = 0.0, panY = 0.0
+
+    /// Zoomed about a point in a view of the given size, keeping that point where it is.
+    func zoomed(by k: Double, about point: CGPoint, in size: CGSize) -> Camera {
+        var camera = self
+        camera.zoom = min(max(zoom * k, 1), Self.maxZoom)
+        let k = camera.zoom / zoom, ax = point.x - size.width / 2, ay = point.y - size.height / 2
+        camera.panX = ax - (ax - panX) * k
+        camera.panY = ay - (ay - panY) * k
+        return camera.clamped(in: size)
+    }
+
+    /// Keeps the die in view: it may only move as far as it has grown.
+    func clamped(in size: CGSize) -> Camera {
+        var camera = self
+        let reach = (zoom - 1) / 2
+        camera.panX = min(max(panX, -reach * size.width), reach * size.width)
+        camera.panY = min(max(panY, -reach * size.height), reach * size.height)
+        return camera
+    }
+
+    /// Part of the way to another camera, zooming at an even pace however far it goes.
+    func interpolated(to other: Camera, _ t: Double) -> Camera {
+        func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * t }
+        let zoom = exp(mix(log(zoom), log(other.zoom)))
+        // Pan grows with zoom, so it is eased per unit of zoom to keep the target point steady.
+        return Camera(yaw: mix(yaw, other.yaw), pitch: mix(pitch, other.pitch), zoom: zoom,
+                      panX: mix(panX / self.zoom, other.panX / other.zoom) * zoom,
+                      panY: mix(panY / self.zoom, other.panY / other.zoom) * zoom)
+    }
 }
 
 /// Orthographic view of a camera orientation, the way Electric's 3D view looks at a cell.
@@ -421,54 +622,146 @@ private struct Projection {
         let (u, v) = orientation.uv(p)
         return CGPoint(x: offset.x + u * scale, y: offset.y + v * scale)
     }
+
+    /// Maps the plane at height z, in units of (dx, dy) from (x, y), onto the screen. The view is
+    /// orthographic, so any plane maps by an affine transform.
+    func transform(x: Double, y: Double, z: Double, dx: Double, dy: Double) -> CGAffineTransform {
+        let o = point([x, y, z]), ex = point([x + dx, y, z]), ey = point([x, y + dy, z])
+        return CGAffineTransform(a: ex.x - o.x, b: ex.y - o.y, c: ey.x - o.x, d: ey.y - o.y, tx: o.x, ty: o.y)
+    }
 }
 
-/// One frame of the adder, built as layout and drawn the way Electric's 3D view shows a cell:
+/// The whole die as an image with a 2 × 2 block of pixels per NAND cell: the cell, the gap beside
+/// it, and the routing channel above. Drawn once the cells are too small to draw one by one, and
+/// rebuilt only while signals are changing.
+@MainActor
+private final class DieImage {
+    nonisolated static let width = Die.columns * 11 * 2, height = Die.laneRows * (Die.bits + 2) * 2
+
+    private var key: (serial: Int, idle: Bool, frame: Int)?
+    private var image: CGImage?
+    private lazy var template: [UInt8] = {
+        var pixels = [UInt8](repeating: 255, count: Self.width * Self.height * 4)
+        func fill(_ x: Int, _ y: Int, _ tint: Tint) {
+            let i = (y * Self.width + x) * 4, (r, g, b) = tint.bytes
+            (pixels[i], pixels[i + 1], pixels[i + 2]) = (r, g, b)
+        }
+        for y in 0..<Self.height {
+            for x in 0..<Self.width { fill(x, y, Layer.substrate.tint.scaled(0.8)) }
+        }
+        for lane in 0..<Die.lanes {
+            let column = lane % Die.columns * 11 + 1, row = lane / Die.columns * (Die.bits + 2) + 1
+            for bit in 0..<Die.bits {
+                for gate in 0..<9 {
+                    let x = 2 * (column + gate), y = 2 * (row + bit)
+                    fill(x, y, Layer.metal3.tint.scaled(0.3))
+                    fill(x + 1, y, Layer.metal3.tint.scaled(0.3))
+                    fill(x + 1, y + 1, Layer.well.tint.scaled(0.7))
+                }
+            }
+        }
+        return pixels
+    }()
+
+    func image(_ settle: Settle, serial: Int, idle: Bool) -> CGImage? {
+        let key = (serial: serial, idle: idle, frame: settle.settled ? -1 : Int(settle.elapsed * 30))
+        if let image, let old = self.key, old == key { return image }
+        var pixels = template
+        pixels.withUnsafeMutableBufferPointer { pixels in
+            for lane in 0..<Die.lanes {
+                let column = lane % Die.columns * 11 + 1, row = lane / Die.columns * (Die.bits + 2) + 1
+                for bit in 0..<Die.bits {
+                    let y = 2 * (row + bit) + 1
+                    for gate in 0..<9 {
+                        let out = Net(on: settle.value(lane, bit, 3 + gate), flash: settle.flash(lane, bit, 3 + gate))
+                        let (r, g, b) = Layer.metal2.tint.lit(out, idle: idle).bytes
+                        let i = (y * Self.width + 2 * (column + gate)) * 4
+                        (pixels[i], pixels[i + 1], pixels[i + 2]) = (r, g, b)
+                    }
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        image = CGImage(width: Self.width, height: Self.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                        bytesPerRow: Self.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        self.key = key
+        return image
+    }
+}
+
+/// One frame of the die, built as layout and drawn the way Electric's 3D view shows a cell:
 /// every layer extruded at its own height in its own colour, seen through an orbiting camera.
-/// Lit channels conduct and lit metal carries a 1.
+/// Lit channels conduct and lit metal carries a 1. Only what is on screen is built, in as much
+/// detail as its size allows: the whole die as an image of its cells, then each cell as a tile,
+/// then every transistor and wire.
 private struct Scene {
+    private enum Detail { case die, cells, layout }
+
     let settle: Settle
     let subtract: Bool
     let idle: Bool
     let time: Double
     let size: CGSize
+    private var detail = Detail.die
     private var boxes: [Box] = []
+    private var tiles: [(corners: [CGPoint], color: Color)] = [] // flat tops of cells and rows
+    private var image: (image: CGImage, transform: CGAffineTransform)?
     private var labels: [Label] = []
     private var flows: [(points: [SIMD3<Double>], opacity: Double)] = [] // charge moving through a gate
     private var projection = Projection()
 
     @MainActor
-    init(pipeline: Pipeline, date: Date, size: CGSize, camera: Camera) {
-        settle = Settle(pipeline.executed, before: pipeline.previous,
+    init(pipeline: Pipeline, date: Date, size: CGSize, camera: Camera, die: DieImage) {
+        settle = Settle(new: pipeline.signals, old: pipeline.previousSignals,
                         elapsed: date.timeIntervalSince(pipeline.executedAt))
         subtract = pipeline.executed.subtract
         idle = pipeline.stages[2] == nil
         time = date.timeIntervalSinceReferenceDate
         self.size = size
-        buildPlane()
-        let lo = boxes.map(\.lo).reduce(boxes[0].lo) { pointwiseMin($0, $1) }
-        let hi = boxes.map(\.hi).reduce(boxes[0].hi) { pointwiseMax($0, $1) }
-        projection = Projection(camera, lo: lo, hi: hi, frame: CGRect(origin: .zero, size: size))
+        projection = Projection(camera, lo: [0, 0, Layer.substrate.z.0], hi: [Die.width, Die.height, Layer.metal3.z.1],
+                                frame: CGRect(origin: .zero, size: size))
+        // How wide a cell's pitch is on screen decides how much of it to draw.
+        let cell = projection.scale * Die.pitch
+        detail = cell >= 80 ? .layout : cell >= 14 ? .cells : .die
+        if detail == .die, let image = die.image(settle, serial: pipeline.executed.serial, idle: idle) {
+            self.image = (image, projection.transform(x: 0, y: 0, z: 0, dx: Die.pitch / 2, dy: Die.rowPitch / 2))
+        }
+        buildDie()
     }
 
     func draw(in context: inout GraphicsContext) {
         context.fill(Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 8), with: .color(Ink.background))
         let projected = boxes.map { corners($0.lo, $0.hi).map(projection.point) }
         for i in paintOrder(projected) { drawBox(&context, boxes[i], projected[i]) }
+        let shown = Set(boxes.indices.filter { onScreen(projected[$0]) }.compactMap { boxes[$0].layer })
+        if let image {
+            var plane = context
+            plane.concatenate(image.transform)
+            // Pixels smaller than a point are smoothed, or the cell grid beats against the screen's.
+            let sharp = projection.scale * Die.pitch / 2 >= 2
+            plane.draw(Image(decorative: image.image, scale: 1).interpolation(sharp ? .none : .high),
+                       in: CGRect(x: 0, y: 0, width: DieImage.width, height: DieImage.height))
+        }
+        for tile in tiles {
+            context.fill(Path { $0.addLines(tile.corners); $0.closeSubpath() }, with: .color(tile.color))
+        }
         for flow in flows { drawFlow(&context, flow.points, opacity: flow.opacity) }
 
         var ink = context
         ink.addFilter(.shadow(color: .black.opacity(0.9), radius: 1.5))
+        let bounds = CGRect(origin: .zero, size: size).insetBy(dx: -150, dy: -30)
         for label in labels {
             let points = label.size * projection.scale
-            guard points >= 5 else { continue }
             var at = projection.point(label.at)
+            guard points >= 5, bounds.contains(at) else { continue }
             at.y += label.dy
             ink.draw(Text(label.text)
                 .font(.system(size: min(points, 18), weight: .medium, design: label.mono ? .monospaced : .rounded))
                 .foregroundColor(label.color), at: at, anchor: label.anchor)
         }
-        drawLegend(&ink)
+        if detail == .layout { drawLegend(&ink, shown) } else { drawSummary(&ink) }
     }
 
     // MARK: Rendering
@@ -564,8 +857,7 @@ private struct Scene {
     }
 
     /// Swatches for the layers on screen, in stacking order, bottom left.
-    private func drawLegend(_ context: inout GraphicsContext) {
-        let shown = Set(boxes.compactMap(\.layer))
+    private func drawLegend(_ context: inout GraphicsContext, _ shown: Set<Layer>) {
         var x = 10.0
         // The substrate is only worth naming next to the doped regions in it.
         for layer in Layer.allCases where shown.contains(layer) && (layer != .substrate || shown.contains(.well)) {
@@ -580,7 +872,45 @@ private struct Scene {
         }
     }
 
+    /// The size of what is on screen, bottom left, until the layers themselves show.
+    private func drawSummary(_ context: inout GraphicsContext) {
+        let text = "\(Die.lanes) lanes × 64-bit adders · \(Die.cells.formatted()) NAND cells · "
+            + "\(Die.transistors.formatted()) transistors"
+        context.draw(Text(text).font(.system(size: 10, weight: .medium, design: .rounded)).foregroundColor(Ink.dim),
+                     at: CGPoint(x: 10, y: size.height - 14), anchor: .leading)
+    }
+
     // MARK: Building
+
+    /// Whether any of a plan rectangle, through the full height of the layer stack, is on screen.
+    private func onScreen(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) -> Bool {
+        onScreen(corners([x0, y0, Layer.substrate.z.0], [x1, y1, Layer.metal3.z.1]).map(projection.point))
+    }
+
+    /// Whether the outline around projected points reaches the screen.
+    private func onScreen(_ points: [CGPoint]) -> Bool {
+        let xs = points.map(\.x), ys = points.map(\.y)
+        return xs.max()! > -8 && xs.min()! < size.width + 8 && ys.max()! > -8 && ys.min()! < size.height + 8
+    }
+
+    /// The substrate under the whole die, then each lane on screen, row by row once they are big
+    /// enough to make out.
+    private mutating func buildDie() {
+        rect(.substrate, -Die.pitch / 2, -Die.pitch / 2, Die.width + Die.pitch / 2, Die.height + Die.pitch / 2)
+        for lane in 0..<Die.lanes {
+            let o = Die.origin(lane)
+            guard onScreen(o.x, o.y, o.x + Die.laneWidth, o.y + Die.laneHeight) else { continue }
+            label("lane \(lane)", o.x + Die.pitch, o.y + Die.rowPitch / 2, 0, size: Die.rowPitch * 0.45,
+                  color: Ink.dim, anchor: .leading)
+            guard detail != .die else { continue }
+            for bit in 0..<Die.bits {
+                let row = Die.row(lane, bit)
+                guard onScreen(row.x + Die.left - 20, row.y - Die.channel, row.x + Die.right + 20, row.y + 31)
+                else { continue }
+                if detail == .layout { buildRow(lane, bit, at: row) } else { sketchRow(lane, bit, at: row) }
+            }
+        }
+    }
 
     private mutating func rect(_ layer: Layer, _ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double,
                                at place: Place = Place(), net: Net? = nil, z: (Double, Double)? = nil,
@@ -588,13 +918,20 @@ private struct Scene {
         let (z0, z1) = z ?? layer.z
         var color = tint ?? layer.tint, glow = 0.0
         if let net {
-            color = (net.on ? color.scaled(idle ? 0.8 : 1) : color.scaled(0.4)).mixed(.white, 0.85 * net.flash)
+            color = color.lit(net, idle: idle)
             glow = net.on ? (idle ? 0.35 : 1) : 0
         } else if tint == nil {
             color = color.scaled(0.8)
         }
         boxes.append(Box(lo: place.p(x0, y0, z0), hi: place.p(x1, y1, z1), tint: color, glow: glow, layer: layer,
                          opacity: layer.opacity))
+    }
+
+    /// The flat top of a plan rectangle at height z.
+    private mutating func tile(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double, z: Double, at place: Place,
+                               _ tint: Tint) {
+        let points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map { projection.point(place.p($0.0, $0.1, z)) }
+        tiles.append((points, tint.color()))
     }
 
     /// A wire through `points` that runs along x on metal 2 and along y on metal 3, with a via
@@ -626,117 +963,78 @@ private struct Scene {
         labels.append(Label(text: text, at: [x, y, z], size: size, color: color, anchor: anchor, mono: mono, dy: dy))
     }
 
-    // MARK: Plane
+    // MARK: Rows
 
-    static let pitch = 36.0                  // cell to cell along a row, leaving a 10 λ gap for risers
-    static let rowEnd = 8 * pitch + 26       // right edge of the last cell
-    static let carryX = 8 * pitch + 28       // riser of the last cell, N9, which gives the carry out
-    static let left = -16.0, right = rowEnd + 16
-    static let trackPitch = 3.0
-
-    /// A wire in a row's routing channel: a trunk on metal 2 along one track, reached on metal 3
-    /// from its source and down to each cell input it drives.
-    private struct Wire {
-        var signal: Int
-        var from: Double                 // x of its source: a riser, or the plane's left edge
-        var pins: [(gate: Int, b: Bool)] // the cell inputs it drives
-        var exits = false                // runs on to the right edge: the sum, and the last carry
-        var track = 0
-
-        var span: (Double, Double) {
-            let xs = [from] + pins.map { Scene.pinX($0.gate, b: $0.b) } + (exits ? [Scene.right] : [])
-            return (xs.min()!, xs.max()!)
+    /// A row too small for its transistors: the well, a tile per cell lit by its output, the
+    /// rails, and the routing channel above.
+    private mutating func sketchRow(_ lane: Int, _ bit: Int, at row: Place) {
+        let settle = settle, idle = idle
+        tile(-1, -1, Die.rowEnd + 1, 13.5, z: 0, at: row, Layer.well.tint)
+        tile(Die.left, -Die.channel + 1, Die.right, -1, z: Layer.metal2.z.1, at: row, Layer.metal3.tint.scaled(0.3))
+        for gate in 0..<9 {
+            let gx = Double(gate) * Die.pitch
+            let out = Net(on: settle.value(lane, bit, 3 + gate), flash: settle.flash(lane, bit, 3 + gate))
+            tile(gx, 3, gx + 26, 25, z: Layer.metal2.z.1, at: row, Layer.metal2.tint.lit(out, idle: idle))
         }
+        tile(0, 0, Die.rowEnd, 3, z: Layer.metal1.z.1, at: row, Layer.metal1.tint.lit(Net(on: true), idle: idle))
+        tile(0, 25, Die.rowEnd, 28, z: Layer.metal1.z.1, at: row, Layer.metal1.tint.lit(Net(on: false), idle: idle))
+        label("bit \(bit)", row.x + Die.left - 2, row.y + 10, 0, size: 4, color: Ink.dim, anchor: .trailing)
     }
 
-    /// The riser beside a cell input: B just left of the cell, A left of that.
-    static func pinX(_ gate: Int, b: Bool) -> Double { Double(gate) * pitch - (b ? 2.5 : 5) }
-
-    /// The wires of one bit's row, packed onto as few tracks as possible.
-    private static func wires(bit: Int) -> [Wire] {
-        var wires: [Wire] = []
-        for signal in 0..<(bit == 3 ? 12 : 11) {
-            var pins: [(gate: Int, b: Bool)] = []
-            for (gate, (x, y)) in FullAdder.gates.enumerated() {
-                if x == signal { pins.append((gate, false)) }
-                if y == signal { pins.append((gate, true)) }
-            }
-            let from = signal < 2 || (signal == 2 && bit == 0) ? left
-                : signal == 2 || signal == 11 ? carryX : Double(signal - 3) * pitch + 28
-            wires.append(Wire(signal: signal, from: from, pins: pins, exits: signal >= 10))
+    /// One full adder as nine NAND cells, the cells on screen down to their transistors, wired
+    /// through the routing channel above the row. The carry out drops into the next row's channel.
+    private mutating func buildRow(_ lane: Int, _ bit: Int, at row: Place) {
+        let settle = settle
+        let net = { Net(on: settle.value(lane, bit, $0), flash: settle.flash(lane, bit, $0)) }
+        let vdd = Net(on: true), ground = Net(on: false)
+        rect(.well, -1, -1, Die.rowEnd + 1, 13.5, at: row)
+        // A cell's own wiring is built with it: the risers to its inputs and from its output.
+        let shown = (0..<9).filter {
+            onScreen(row.x + Double($0) * Die.pitch - 6, row.y - Die.channel, row.x + Double($0 + 1) * Die.pitch, row.y + 28)
         }
-        var ends: [Double] = []
-        for i in wires.indices.sorted(by: { wires[$0].span.0 < wires[$1].span.0 }) {
-            let (start, end) = wires[i].span
-            if let free = ends.firstIndex(where: { $0 + 3 < start }) {
-                wires[i].track = free
-                ends[free] = end
-            } else {
-                wires[i].track = ends.count
-                ends.append(end)
+        for gate in shown {
+            let (x, y) = FullAdder.gates[gate], gx = Double(gate) * Die.pitch, cell = Place(x: row.x + gx, y: row.y)
+            nand(at: cell, a: net(x), b: net(y), out: net(3 + gate))
+            label("N\(gate + 1)", cell.x + 13, row.y + 14, Layer.metal2.z.1, size: 2.2, color: Ink.dim)
+            if gate < 8 { // the rails run on through the gaps
+                rect(.metal1, gx + 26, 0, gx + Die.pitch, 3, at: row, net: vdd)
+                rect(.metal1, gx + 26, 25, gx + Die.pitch, 28, at: row, net: ground)
+            }
+            addFlow(lane, bit, gate, at: cell)
+        }
+        // The inputs enter on the left edge; their values are named once per row.
+        let carryIn = bit == 0 ? " c\(net(2).on.digit)" : ""
+        label("bit \(bit)", row.x + Die.left - 2, row.y + 10, 0, size: 4, color: Ink.dim, anchor: .trailing)
+        label("a\(net(0).on.digit) \(subtract ? "b̄" : "b")\(net(1).on.digit)" + carryIn, row.x + Die.left - 2,
+              row.y + 17, 0, size: 3.4, anchor: .trailing, mono: true)
+        label("VDD", row.x + Die.rowEnd + 1.5, row.y + 1.5, Layer.metal1.z.1, size: 2.4, color: Ink.high, anchor: .leading)
+        label("GND", row.x + Die.rowEnd + 1.5, row.y + 26.5, Layer.metal1.z.1, size: 2.4, color: Ink.dim, anchor: .leading)
+
+        for wire in Die.wires(bit: bit) {
+            let n = net(wire.signal), y = Die.trackY(wire.track), (start, end) = wire.span
+            route([(start, y), (end, y)], width: 2, net: n, at: row)
+            if wire.from != Die.left { via2(wire.from, y, at: row) }
+            if (3...10).contains(wire.signal) || wire.signal == 11, shown.contains(min(wire.signal - 3, 8)) {
+                let gx = Double(wire.signal - 3) * Die.pitch
+                route([(gx + 26, 14), (wire.from, 14), (wire.from, y)], width: 2, net: n, at: row)
+            }
+            for pin in wire.pins where shown.contains(pin.gate) {
+                let x = Die.pinX(pin.gate, b: pin.b), gx = Double(pin.gate) * Die.pitch
+                route([(x, y), (x, pin.b ? 19.2 : 8.75), (gx + 1.75, pin.b ? 19.2 : 8.75)], width: 2, net: n,
+                      at: row, drop: true)
+                via2(x, y, at: row)
+            }
+            let v = n.on.digit
+            if wire.signal == 10 {
+                label("s\(bit) \(v)", row.x + Die.right + 1, row.y + y, 0, size: 3.4, anchor: .leading, mono: true)
+            } else if wire.signal == 11 {
+                label("carry \(v)", row.x + Die.right + 1, row.y + y + 4, 0, size: 3.4, color: Ink.dim, anchor: .leading)
             }
         }
-        return wires
-    }
-
-    /// The four full adders as rows of nine NAND cells, bit 0 on top. Each row sits under its
-    /// routing channel; the carry out of a row drops into the channel of the next.
-    private mutating func buildPlane() {
-        let rows = (0..<4).map(Self.wires)
-        let tracks = rows.flatMap { $0.map(\.track) }.max()! + 1
-        let channel = Double(tracks) * Self.trackPitch + 2.5, rowPitch = channel + 31
-        func trackY(_ track: Int) -> Double { -3.5 - Double(track) * Self.trackPitch } // above the row
-        rect(.substrate, Self.left - 14, -2, Self.right + 14, 4 * rowPitch)
-
-        for bit in 0..<4 {
-            let row = Place(y: channel + Double(bit) * rowPitch), settle = settle
-            let net = { Net(on: settle.value(bit, $0), flash: settle.flash(bit, $0)) }
-            let vdd = Net(on: true), ground = Net(on: false)
-            rect(.well, -1, -1, Self.rowEnd + 1, 13.5, at: row)
-            for gate in 0..<9 {
-                let (x, y) = FullAdder.gates[gate], gx = Double(gate) * Self.pitch
-                nand(at: Place(x: gx, y: row.y), a: net(x), b: net(y), out: net(3 + gate))
-                label("N\(gate + 1)", gx + 13, row.y + 14, Layer.metal2.z.1, size: 2.2, color: Ink.dim)
-                if gate < 8 { // the rails run on through the gaps
-                    rect(.metal1, gx + 26, 0, gx + Self.pitch, 3, at: row, net: vdd)
-                    rect(.metal1, gx + 26, 25, gx + Self.pitch, 28, at: row, net: ground)
-                }
-                addFlow(bit: bit, gate: gate, at: Place(x: gx, y: row.y))
-            }
-            // The inputs enter on the left edge; their values are named once per row.
-            let carryIn = bit == 0 ? " c\(net(2).on.digit)" : ""
-            label("bit \(bit)", Self.left - 2, row.y + 10, 0, size: 4, color: Ink.dim, anchor: .trailing)
-            label("a\(net(0).on.digit) \(subtract ? "b̄" : "b")\(net(1).on.digit)" + carryIn, Self.left - 2,
-                  row.y + 17, 0, size: 3.4, anchor: .trailing, mono: true)
-            label("VDD", Self.rowEnd + 1.5, row.y + 1.5, Layer.metal1.z.1, size: 2.4, color: Ink.high, anchor: .leading)
-            label("GND", Self.rowEnd + 1.5, row.y + 26.5, Layer.metal1.z.1, size: 2.4, color: Ink.dim, anchor: .leading)
-
-            for wire in rows[bit] {
-                let n = net(wire.signal), y = trackY(wire.track), (start, end) = wire.span
-                route([(start, y), (end, y)], width: 2, net: n, at: row)
-                if wire.from != Self.left { via2(wire.from, y, at: row) }
-                if (3...10).contains(wire.signal) || wire.signal == 11 {
-                    let gx = Double(wire.signal - 3) * Self.pitch
-                    route([(gx + 26, 14), (wire.from, 14), (wire.from, y)], width: 2, net: n, at: row)
-                }
-                for pin in wire.pins {
-                    let x = Self.pinX(pin.gate, b: pin.b), gx = Double(pin.gate) * Self.pitch
-                    route([(x, y), (x, pin.b ? 19.2 : 8.75), (gx + 1.75, pin.b ? 19.2 : 8.75)], width: 2, net: n,
-                          at: row, drop: true)
-                    via2(x, y, at: row)
-                }
-                let v = n.on.digit
-                if wire.signal == 10 {
-                    label("s\(bit) \(v)", Self.right + 1, row.y + y, 0, size: 3.4, anchor: .leading, mono: true)
-                } else if wire.signal == 11 {
-                    label("carry \(v)", Self.right + 1, row.y + y + 4, 0, size: 3.4, color: Ink.dim, anchor: .leading)
-                }
-            }
-            // The carry out drops into the next row's channel, where that row picks it up.
-            if bit < 3, let carry = rows[bit + 1].first(where: { $0.signal == 2 }) {
-                route([(Self.rowEnd, 14), (Self.carryX, 14), (Self.carryX, rowPitch + trackY(carry.track))],
-                      width: 2, net: net(11), at: row)
-            }
+        // The carry out drops into the next row's channel, where that row picks it up.
+        if bit < Die.bits - 1, shown.contains(8), let carry = Die.wires(bit: bit + 1).first(where: { $0.signal == 2 }) {
+            route([(Die.rowEnd, 14), (Die.carryX, 14), (Die.carryX, Die.rowPitch + Die.trackY(carry.track))],
+                  width: 2, net: net(11), at: row)
         }
     }
 
@@ -746,11 +1044,11 @@ private struct Scene {
 
     /// Charge moves through a cell only when its output switches: in from VDD through the PMOS,
     /// or out to ground through the NMOS.
-    private mutating func addFlow(bit: Int, gate: Int, at place: Place) {
-        guard !idle, let age = settle.age(bit, 3 + gate), age < 0.8 else { return }
+    private mutating func addFlow(_ lane: Int, _ bit: Int, _ gate: Int, at place: Place) {
+        guard !idle, let age = settle.age(lane, bit, 3 + gate), age < 0.8 else { return }
         let (x, y) = FullAdder.gates[gate]
-        let a = settle.value(bit, x), b = settle.value(bit, y)
-        let paths: [[SIMD3<Double>]] = settle.value(bit, 3 + gate)
+        let a = settle.value(lane, bit, x), b = settle.value(lane, bit, y)
+        let paths: [[SIMD3<Double>]] = settle.value(lane, bit, 3 + gate)
             ? [(8.5, !a), (21.5, !b)].filter(\.1).map { x, _ in
                 [[x, 1.5, 5.5], [x, 7.5, 5.5], [x, 7.5, 1], [15, 7.5, 1], [15, 7.5, 9], [15, 14, 9], [28, 14, 9]]
             }
@@ -814,14 +1112,49 @@ private struct Scene {
         rect(.metal2, 7.5, 13, 26, 15, at: place, net: out)
         rect(.metal2, 7.5, 15, 9.5, 21.5, at: place, net: out)
     }
-
 }
 
+/// Hands scroll-wheel events over the view to `handler`, which returns whether it used them, so
+/// panning the layout does not also scroll the dashboard. Clicks pass straight through.
+private struct ScrollCatcher: NSViewRepresentable {
+    let handler: (NSEvent, CGPoint) -> Bool
+
+    func makeNSView(context: Context) -> CatcherView { CatcherView() }
+    func updateNSView(_ view: CatcherView, context: Context) { view.handler = handler }
+
+    final class CatcherView: NSView {
+        var handler: ((NSEvent, CGPoint) -> Bool)?
+        private var monitor: Any?
+
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                // Local monitors run on the main thread.
+                nonisolated(unsafe) let event = event
+                let used = MainActor.assumeIsolated {
+                    guard let self, event.window === self.window else { return false }
+                    let point = self.convert(event.locationInWindow, from: nil)
+                    return self.bounds.contains(point) && self.handler?(event, point) == true
+                }
+                return used ? nil : event
+            }
+        }
+    }
+}
 
 private extension Bool {
     var digit: String { self ? "1" : "0" }
 }
 
-private func binary(_ value: Int) -> String {
-    (0..<4).reversed().map { value >> $0 & 1 == 1 ? "1" : "0" }.joined()
+/// A 64-bit value in hex, grouped in fours.
+private func hex(_ value: UInt64) -> String {
+    let digits = String(value, radix: 16, uppercase: true)
+    let padded = String(repeating: "0", count: 16 - digits.count) + digits
+    return "0x" + stride(from: 0, to: 16, by: 4).map { String(padded.dropFirst($0).prefix(4)) }.joined(separator: "_")
 }

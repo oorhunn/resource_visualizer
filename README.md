@@ -70,22 +70,32 @@ reported by macOS.
 
 ### Core zoom
 
-![Zooming from a CPU core into its adder, laid out down to the transistors](docs/media/core-zoom.gif)
+![Zooming from a CPU core's die of adders down to the transistors](docs/media/core-zoom.gif)
 
-Click a CPU core in the chip model to zoom in to the low four bits of its adder, drawn as
-one plane of 3D layout in the style of [Electric](https://www.staticfreesoft.com/)'s 3D
-view: each layer is extruded at its own height in Electric's colours (red polysilicon,
-blue metal 1, magenta metal 2, gold metal 3), with metal see-through so the transistors
-stay visible. Each row is one full adder of nine NAND cells, PMOS with p+ diffusion
-(orange) in the n-well above NMOS with n+ diffusion (green) in the p-substrate, wired
-through a routing channel above the row on metal 2 and 3. The carry ripples down from
-bit 0 to bit 3 one gate delay at a time, lit channels conduct and lit metal carries a 1.
+Click a CPU core in the chip model to open its die: 256 lanes of 64-bit adders side by
+side, the way a GPU or a vector unit repeats one datapath many times over. That is 147,456
+NAND cells and 589,824 transistors, every one of them laid out and live. Zoom in from the
+whole die through lanes and rows of cells down to a single transistor, about 800 times
+closer. Only what is on screen is built, in as much detail as its size allows. From far
+out, the die is an image of its cells lit by their outputs; then each cell becomes a tile;
+up close it is full 3D layout in the style of [Electric](https://www.staticfreesoft.com/)'s
+3D view. There each layer is extruded at its own height in Electric's colours (red
+polysilicon, blue metal 1, magenta metal 2, gold metal 3), with metal see-through so the
+transistors stay visible. Each row is one full adder of nine NAND cells, PMOS with p+
+diffusion (orange) in the n-well above NMOS with n+ diffusion (green) in the p-substrate,
+wired through a routing channel above the row on metal 2 and 3. Lit channels conduct and
+lit metal carries a 1.
 
-The adder works on instructions clocked through a textbook five-stage RISC-V pipeline,
-which issues an instruction in as many clock slots as the core is loaded; the rest are
-bubbles. Drag to orbit the view and pinch over a cell to zoom in on its transistors; the
-× in the corner goes back to the chip. Apple does not publish its core design, so this is
-a teaching model rather than the real circuit; only the instruction rate is live data.
+Every lane adds its own made-up register values for the same instruction, clocked through
+a textbook five-stage RISC-V pipeline, which issues an instruction in as many clock slots
+as the core is loaded; the rest are bubbles. With each new instruction the carry ripples
+down all 256 lanes from bit 0 to bit 63 at once, one gate delay at a time.
+
+Pinch, double-click, or use the magnifier buttons or a mouse wheel to zoom about a point;
+scroll with two fingers to pan, and drag to orbit. The ↺ button returns to the whole die
+and the × goes back to the chip. Apple does not publish its core design, so this is a
+teaching model rather than the real circuit: a real core has a few adders using faster
+carry logic. Only the instruction rate is live data.
 
 ## Dock
 
