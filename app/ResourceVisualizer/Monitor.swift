@@ -46,25 +46,37 @@ struct HistoryPoint: Identifiable {
 /// Raw counters from one backend pass; diffed against the previous pass to get rates.
 private struct RawSample: Sendable {
     var cores: [rv_core]
-    var processes: [rv_process]
+    var processes: ProcessSnapshot?
     var gpus: [rv_gpu]
     var memory: rv_memory?
     var disk: DiskSample?
     var time: ContinuousClock.Instant
 }
 
-private func readSample(includeDisk: Bool) -> RawSample {
-    func list<T>(_ fill: (UnsafeMutablePointer<T>?, Int) -> Int, initial: Int, empty: T) -> [T] {
-        var capacity = initial
-        while true {
-            var items = [T](repeating: empty, count: capacity)
-            let count = items.withUnsafeMutableBufferPointer { fill($0.baseAddress, capacity) }
-            if count <= capacity { return Array(items.prefix(count)) }
-            capacity = count + 64 // the list grew between calls
-        }
+private struct ProcessSnapshot: Sendable {
+    var processes: [rv_process]
+    var time: ContinuousClock.Instant
+}
+
+private func list<T>(_ fill: (UnsafeMutablePointer<T>?, Int) -> Int, initial: Int, empty: T) -> [T] {
+    var capacity = initial
+    while true {
+        var items = [T](repeating: empty, count: capacity)
+        let count = items.withUnsafeMutableBufferPointer { fill($0.baseAddress, capacity) }
+        if count <= capacity { return Array(items.prefix(count)) }
+        capacity = count + 64 // the list grew between calls
     }
+}
+
+/// Every process's counters; the costliest read in a pass, so it is skipped when unused.
+private func readProcesses() -> ProcessSnapshot {
+    ProcessSnapshot(processes: list({ rv_processes($0, $1) }, initial: 1024, empty: rv_process()),
+                    time: .now)
+}
+
+private func readSample(includeProcesses: Bool, includeDisk: Bool) -> RawSample {
     let cores = list({ rv_cpu_cores($0, $1) }, initial: 64, empty: rv_core())
-    let processes = list({ rv_processes($0, $1) }, initial: 1024, empty: rv_process())
+    let processes = includeProcesses ? readProcesses() : nil
     let gpus = list({ rv_gpus($0, $1) }, initial: 4, empty: rv_gpu())
     var memory = rv_memory()
     let hasMemory = rv_memory_stats(&memory)
@@ -113,6 +125,9 @@ final class Monitor {
     var gpuUtilization: Double? { gpus.compactMap(\.utilization).max() }
 
     private var previous: RawSample?
+    private var previousProcesses: ProcessSnapshot?
+    /// Views showing `processes`; the process list is read only while there is at least one.
+    private var processViewers = 0
     private var historyCounter = 0
     private var lastDiskRead: ContinuousClock.Instant?
     private var task: Task<Void, Never>?
@@ -130,12 +145,49 @@ final class Monitor {
                 let includeDisk = self.lastDiskRead
                     .map { $0.duration(to: .now) >= Self.diskInterval } ?? true
                 if includeDisk { self.lastDiskRead = .now }
+                let includeProcesses = self.processViewers > 0
                 let raw = await Task.detached(priority: .utility) {
-                    readSample(includeDisk: includeDisk)
+                    readSample(includeProcesses: includeProcesses, includeDisk: includeDisk)
                 }.value
                 self.apply(raw)
                 try? await Task.sleep(for: .seconds(self.interval))
             }
+        }
+    }
+
+    /// Call from `onAppear` of a view that shows `processes`, paired with `removeProcessViewer`.
+    func addProcessViewer() {
+        processViewers += 1
+        guard processViewers == 1 else { return }
+        // Two quick reads give CPU rates now rather than after the next two passes.
+        Task { [weak self] in
+            let baseline = await Task.detached(priority: .utility) { readProcesses() }.value
+            try? await Task.sleep(for: .milliseconds(250))
+            let current = await Task.detached(priority: .utility) { readProcesses() }.value
+            guard let self, self.processViewers > 0 else { return }
+            self.applyProcesses(current, since: baseline)
+        }
+    }
+
+    func removeProcessViewer() {
+        processViewers = max(processViewers - 1, 0)
+        if processViewers == 0 { previousProcesses = nil }
+    }
+
+    private func applyProcesses(_ snapshot: ProcessSnapshot, since before: ProcessSnapshot?) {
+        previousProcesses = snapshot
+        var oldProcesses: [Int32: rv_process] = [:]
+        for process in before?.processes ?? [] { oldProcesses[process.pid] = process }
+        let elapsed = before.map { $0.time.duration(to: snapshot.time) / .seconds(1) } ?? 0
+        processes = snapshot.processes.map { p in
+            var cpu: Double?
+            // A reused pid has a different start time, so it is treated as a new process.
+            if let old = oldProcesses[p.pid], old.start_id == p.start_id, p.cpu_ns >= old.cpu_ns,
+               elapsed > 0 {
+                cpu = Double(p.cpu_ns - old.cpu_ns) / (elapsed * 1e9) * 100
+            }
+            return ProcessSample(id: Int(p.pid), name: string(p.name), cpu: cpu,
+                                 memory: p.resident_bytes)
         }
     }
 
@@ -171,18 +223,9 @@ final class Monitor {
 
         if let d = raw.disk { disk = d }
 
-        var oldProcesses: [Int32: rv_process] = [:]
-        for process in before?.processes ?? [] { oldProcesses[process.pid] = process }
-        let elapsed = before.map { $0.time.duration(to: raw.time) / .seconds(1) } ?? 0
-        processes = raw.processes.map { p in
-            var cpu: Double?
-            // A reused pid has a different start time, so it is treated as a new process.
-            if let old = oldProcesses[p.pid], old.start_id == p.start_id, p.cpu_ns >= old.cpu_ns,
-               elapsed > 0 {
-                cpu = Double(p.cpu_ns - old.cpu_ns) / (elapsed * 1e9) * 100
-            }
-            return ProcessSample(id: Int(p.pid), name: string(p.name), cpu: cpu,
-                                 memory: p.resident_bytes)
+        // Dropped if the last viewer left while this pass was reading.
+        if let snapshot = raw.processes, processViewers > 0 {
+            applyProcesses(snapshot, since: previousProcesses)
         }
 
         gpus = raw.gpus.map { g in

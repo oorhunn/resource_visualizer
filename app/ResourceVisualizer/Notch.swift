@@ -315,6 +315,8 @@ private struct NotchPanel: View {
                 .font(.caption)
             }
         }
+        .onAppear { monitor.addProcessViewer() }
+        .onDisappear { monitor.removeProcessViewer() }
     }
 
     private var topProcesses: [ProcessSample] {

@@ -54,6 +54,8 @@ struct DashboardView: View {
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("content")).maxY + 20 } action: { fitHeight($0) }
                 Card("Cores") { CoreGrid(cores: monitor.cores) }
                 Card("Processes") { ProcessTable(processes: monitor.processes, state: state) }
+                    .onAppear { monitor.addProcessViewer() }
+                    .onDisappear { monitor.removeProcessViewer() }
             }
             .padding(20)
             .coordinateSpace(.named("content"))
