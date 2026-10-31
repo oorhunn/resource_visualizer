@@ -46,7 +46,7 @@ final class ReadmeMedia {
         ).background(Color(nsColor: .windowBackgroundColor)))
         add("chip", width: 720, size: CGSize(width: 720, height: 340), LiveChip(monitor: monitor)
             .padding(20).background(.black).environment(\.colorScheme, .dark))
-        add("core-zoom", width: 720, size: CGSize(width: 720, height: 420), LiveZoom(monitor: monitor)
+        add("core-zoom", width: 720, size: CGSize(width: 720, height: 500), LiveZoom(monitor: monitor)
             .padding(20).background(.black).environment(\.colorScheme, .dark))
 
         // The Dock tile: a real DockGauge on an offscreen window, "minimized" by notification.

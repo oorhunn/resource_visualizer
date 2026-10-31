@@ -70,26 +70,22 @@ reported by macOS.
 
 ### Core zoom
 
-![Zooming from a CPU core down to a CMOS NAND gate](docs/media/core-zoom.gif)
+![Zooming from a CPU core into its adder, laid out down to the transistors](docs/media/core-zoom.gif)
 
-Click a CPU core in the chip model to zoom in. Every level is drawn as 3D layout in the
-style of [Electric](https://www.staticfreesoft.com/)'s 3D view: each layer is extruded at
-its own height in Electric's colours (red polysilicon, blue metal 1, magenta metal 2, gold
-metal 3), with metal see-through so the transistors stay visible. Lit channels conduct and
-lit metal carries a 1. The zoom opens on the transistors; the breadcrumbs zoom back out:
+Click a CPU core in the chip model to zoom in to the low four bits of its adder, drawn as
+one plane of 3D layout in the style of [Electric](https://www.staticfreesoft.com/)'s 3D
+view: each layer is extruded at its own height in Electric's colours (red polysilicon,
+blue metal 1, magenta metal 2, gold metal 3), with metal see-through so the transistors
+stay visible. Each row is one full adder of nine NAND cells, PMOS with p+ diffusion
+(orange) in the n-well above NMOS with n+ diffusion (green) in the p-substrate, wired
+through a routing channel above the row on metal 2 and 3. The carry ripples down from
+bit 0 to bit 3 one gate delay at a time, lit channels conduct and lit metal carries a 1.
 
-1. **NAND gate**: one cell of the adder at full size, with p+ diffusion (orange) in the
-   n-well and n+ diffusion (green) in the p-substrate, polysilicon gates crossing them,
-   contacts, rails and vias, showing which transistors conduct.
-2. **Adder**: the low four bits of the adder in the execute stage, with the carry
-   rippling from bit 0 to bit 3 for the instruction that just executed. The tiles on each
-   full adder are its nine NAND cells; click one to open its transistors.
-3. **Pipeline**: a textbook five-stage RISC-V pipeline (fetch, decode, execute, memory,
-   write back) as blocks on the die. The share of clock slots that carry an instruction
-   follows the real load of that core; idle slots are bubbles. Click Execute for the adder.
-
-Drag to orbit the view and pinch to zoom. Apple does not publish its core design, so this is a
-teaching model rather than the real circuit; only the pipeline occupancy is live data.
+The adder works on instructions clocked through a textbook five-stage RISC-V pipeline,
+which issues an instruction in as many clock slots as the core is loaded; the rest are
+bubbles. Drag to orbit the view and pinch over a cell to zoom in on its transistors; the
+× in the corner goes back to the chip. Apple does not publish its core design, so this is
+a teaching model rather than the real circuit; only the instruction rate is live data.
 
 ## Dock
 
@@ -183,6 +179,6 @@ scripts/readme-media.sh
 
 This builds the app with a `README_MEDIA` flag that adds an offscreen recorder
 (`ReadmeMedia.swift`; it is not compiled into normal builds). The recorder renders each
-view in a window placed off screen, drives it with live data for about 25 seconds
-(including clicks for the core zoom), busy-loops half the cores for a few seconds, and
-writes the GIFs to `docs/media/`. Nothing appears on screen.
+view in a window placed off screen, drives it with live data for about 25 seconds,
+busy-loops half the cores for a few seconds, and writes the GIFs to `docs/media/`. Nothing
+appears on screen.
