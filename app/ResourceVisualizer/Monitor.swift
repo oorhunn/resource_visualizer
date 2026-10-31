@@ -53,7 +53,7 @@ private struct RawSample: Sendable {
     var time: ContinuousClock.Instant
 }
 
-private func readSample() -> RawSample {
+private func readSample(includeDisk: Bool) -> RawSample {
     func list<T>(_ fill: (UnsafeMutablePointer<T>?, Int) -> Int, initial: Int, empty: T) -> [T] {
         var capacity = initial
         while true {
@@ -69,10 +69,12 @@ private func readSample() -> RawSample {
     var memory = rv_memory()
     let hasMemory = rv_memory_stats(&memory)
     return RawSample(cores: cores, processes: processes, gpus: gpus,
-                     memory: hasMemory ? memory : nil, disk: readDisk(), time: .now)
+                     memory: hasMemory ? memory : nil, disk: includeDisk ? readDisk() : nil,
+                     time: .now)
 }
 
-/// Startup volume usage. Purgeable space counts as free, matching Finder.
+/// Startup volume usage. Purgeable space counts as free, matching Finder. Takes ~15 ms, far more
+/// than everything else in a pass, so `Monitor` reads it only every `diskInterval`.
 private func readDisk() -> DiskSample? {
     let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey,
                                      .volumeAvailableCapacityForImportantUsageKey]
@@ -94,6 +96,7 @@ private func optional(_ value: Double) -> Double? { value.isNaN ? nil : value }
 @MainActor @Observable
 final class Monitor {
     static let historyLength = 120
+    static let diskInterval: Duration = .seconds(60)
 
     private(set) var cores: [CoreSample] = []
     private(set) var processes: [ProcessSample] = []
@@ -111,6 +114,7 @@ final class Monitor {
 
     private var previous: RawSample?
     private var historyCounter = 0
+    private var lastDiskRead: ContinuousClock.Instant?
     private var task: Task<Void, Never>?
 
     init() {
@@ -122,8 +126,13 @@ final class Monitor {
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
-                let raw = await Task.detached(priority: .utility) { readSample() }.value
                 guard let self else { return }
+                let includeDisk = self.lastDiskRead
+                    .map { $0.duration(to: .now) >= Self.diskInterval } ?? true
+                if includeDisk { self.lastDiskRead = .now }
+                let raw = await Task.detached(priority: .utility) {
+                    readSample(includeDisk: includeDisk)
+                }.value
                 self.apply(raw)
                 try? await Task.sleep(for: .seconds(self.interval))
             }
