@@ -18,7 +18,8 @@ struct ChipView: View {
 
     var body: some View {
         let target = Loads(cores: cores, gpu: gpu, memory: memory)
-        TimelineView(.animation(paused: motion.settled)) { timeline in
+        // Capped at 80 Hz; uncapped it runs at the display rate, 120 Hz on ProMotion.
+        TimelineView(.animation(minimumInterval: 1 / 80, paused: motion.settled)) { timeline in
             let shown = motion.loads(at: timeline.date) ?? target
             let chip = ChipModel(cores: shown.applied(to: cores), gpu: shown.applied(to: gpu),
                                  memory: shown.applied(to: memory))
