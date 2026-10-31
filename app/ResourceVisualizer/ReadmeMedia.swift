@@ -49,18 +49,17 @@ final class ReadmeMedia {
         add("core-zoom", width: 720, size: CGSize(width: 720, height: 500), LiveZoom(monitor: monitor)
             .padding(20).background(.black).environment(\.colorScheme, .dark))
 
-        // The Dock tile: a real DockGauge on an offscreen window, "minimized" by notification.
-        let tileWindow = offscreenWindow(size: CGSize(width: 10, height: 10))
-        let gauge = DockGauge(window: tileWindow, monitor: monitor, metric: .cpu)
+        // The Dock tile: a real DockGauge on the app's tile, which it fills whatever the
+        // "Minimize windows into application icon" setting.
+        let gauge = DockGauge(monitor: monitor, metric: .cpu)
         self.gauge = gauge
-        if let tile = tileWindow.dockTile.contentView {
+        if let tile = NSApp.dockTile.contentView {
             tile.frame = NSRect(x: 0, y: 0, width: 256, height: 256)
             scenes.append(Scene(name: "dock", view: tile, width: 256))
         }
 
         // Let samples accumulate, then start recording.
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.warmUp) { [self] in
-            NotificationCenter.default.post(name: NSWindow.willMiniaturizeNotification, object: tileWindow)
             let timer = Timer(timeInterval: 1 / Self.fps, repeats: true) { [weak self] timer in
                 MainActor.assumeIsolated { self?.tick(timer) }
             }
