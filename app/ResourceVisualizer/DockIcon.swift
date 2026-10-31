@@ -212,6 +212,8 @@ final class DockGaugeView: NSView {
 final class DockGauge {
     static let sparklinePoints = 24
     private static let frameRate = 30.0
+    /// How long the newest point takes to slide in; the timer stops once it and the ring settle.
+    private static let slideDuration = 0.4
 
     /// Whether the live gauge is on; remembered across launches, on by default.
     static var savedEnabled: Bool {
@@ -256,6 +258,7 @@ final class DockGauge {
     private let windowView = DockGaugeView()
     private var minimized = false
     private var timer: Timer?
+    private var watchingHistory = false
     private var observers: [NSObjectProtocol] = []
     private var lastPointID: Int?
     private var pointArrived = Date.distantPast
@@ -303,16 +306,43 @@ final class DockGauge {
             attach(windowView, to: window.dockTile,
                    live: live && minimized && !Self.minimizesIntoAppIcon)
         }
-        if live, timer == nil {
-            let timer = Timer(timeInterval: 1 / Self.frameRate, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            self.timer = timer
-        } else if !live {
-            timer?.invalidate()
-            timer = nil
+        if live {
+            watchHistory()
+        } else {
+            stopTimer()
         }
+    }
+
+    /// Wakes the gauge when a sample arrives, instead of polling for one.
+    private func watchHistory() {
+        guard !watchingHistory else { return }
+        watchingHistory = true
+        withObservationTracking { _ = monitor.history } onChange: { [weak self] in
+            // Called before the change lands, so look at it on the next turn.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.watchingHistory = false
+                    guard self.isEnabled && self.inDock else { return }
+                    self.watchHistory()
+                    self.startTimer()
+                }
+            }
+        }
+    }
+
+    private func startTimer() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 1 / Self.frameRate, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
     }
 
     private func attach(_ view: DockGaugeView, to tile: NSDockTile, live: Bool) {
@@ -350,17 +380,22 @@ final class DockGauge {
 
     private func tick() {
         refresh()
-        // Ease toward the latest value and slide the sparkline over one sampling interval.
-        let scroll = CGFloat(min(Date().timeIntervalSince(pointArrived) / max(monitor.interval, 0.1), 1))
+        // Ease toward the latest value and slide the newest point in.
+        let slide = min(Self.slideDuration, monitor.interval)
+        let scroll = CGFloat(min(Date().timeIntervalSince(pointArrived) / slide, 1))
+        var settled = true
         for tile in liveTiles {
             guard let view = tile.contentView as? DockGaugeView else { continue }
             let target = view.current ?? 0
             let before = (view.displayed, view.scroll)
-            view.displayed += (target - view.displayed) * (1 - exp(-6 / Self.frameRate))
-            if abs(target - view.displayed) < 0.05 { view.displayed = target }
+            view.displayed += (target - view.displayed) * (1 - exp(-10 / Self.frameRate))
+            // The label shows whole percents, so the last half percent can snap.
+            if abs(target - view.displayed) < 0.5 { view.displayed = target }
             view.scroll = scroll
             // Redraw only while something is moving.
             if before != (view.displayed, view.scroll) { tile.display() }
+            settled = settled && view.displayed == target && view.scroll == 1
         }
+        if settled { stopTimer() }
     }
 }
