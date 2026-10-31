@@ -55,7 +55,9 @@ open build/ResourceVisualizer.app
   into Performance and Efficiency cores on Apple Silicon.
 - **Processes**: filter by name or PID; click a column header to sort.
 
-Closing the window keeps the notch running; reopen it from the Dock icon or with ⌘1.
+The dashboard opens on demand, from the notch's **Open Dashboard**, the Dock icon, ⌘1, or by
+opening the app again; the app launches without it. Closing the window frees its views and keeps
+the notch running.
 
 ### Chip model
 
@@ -101,6 +103,8 @@ carry logic. Only the instruction rate is live data.
 
 ![The live Dock icon switching from CPU to GPU](docs/media/dock.gif)
 
+- The app is in the Dock only while the dashboard is open. With the notch turned off it stays
+  there, so the app can still be reached.
 - The app icon is drawn in code (`DockIcon.swift`); `scripts/bundle.sh` exports it to
   `AppIcon.icns`.
 - The app icon in the Dock is a live gauge: a ring that eases to the current value over a

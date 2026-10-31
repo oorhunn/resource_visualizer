@@ -7,9 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dashboardState = DashboardState()
     private var dashboard: NSWindow?
     private var dashboardFitted = false
+    private var dashboardCloseObserver: NSObjectProtocol?
     private var notch: NotchController?
     private var notchItem: NSMenuItem?
-    private var dockGauge: DockGauge?
+    private lazy var dockGauge = DockGauge(monitor: monitor, metric: DockMetric.saved,
+                                           enabled: DockGauge.savedEnabled, inDock: wantsDockIcon)
 
     private var showsNotch: Bool {
         get { UserDefaults.standard.object(forKey: "showNotch") as? Bool ?? true }
@@ -22,7 +24,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.start()
         notch = NotchController(monitor: monitor) { [weak self] in self?.showDashboard() }
         if showsNotch { notch?.show() }
-        showDashboard()
+        updateDockIcon()
+    }
+
+    /// The Dock icon shows while the dashboard is open, or always when the notch is off, so the
+    /// app can still be reached.
+    var wantsDockIcon: Bool { dashboard != nil || !showsNotch }
+
+    private func updateDockIcon() {
+        let policy: NSApplication.ActivationPolicy = wantsDockIcon ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+        dockGauge.inDock = wantsDockIcon
     }
 
     // Closing the window keeps the notch running; quit from the menu or the notch.
@@ -49,12 +61,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.isReleasedWhenClosed = false
             window.center()
             window.setFrameAutosaveName("Dashboard")
-            dockGauge = DockGauge(window: window, monitor: monitor, metric: DockMetric.saved,
-                                   enabled: DockGauge.savedEnabled)
+            dashboardCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                                   object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.dashboardWillClose() }
+            }
             dashboard = window
+            dockGauge.window = window
+            updateDockIcon()
         }
         NSApp.activate()
         dashboard?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Drops the window and its views so a closed dashboard costs nothing; it is rebuilt on open.
+    private func dashboardWillClose() {
+        guard let window = dashboard else { return }
+        dashboardCloseObserver.map(NotificationCenter.default.removeObserver)
+        dashboardCloseObserver = nil
+        dashboard = nil
+        dockGauge.window = nil
+        updateDockIcon()
+        // Let the close finish before tearing down the content it is animating.
+        DispatchQueue.main.async { window.contentViewController = nil }
     }
 
     /// Sizes the window so the content down to the chip shows without scrolling, keeping its top edge.
@@ -74,12 +102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let metric = sender.representedObject as? String, let metric = DockMetric(rawValue: metric)
         else { return }
         DockMetric.saved = metric
-        dockGauge?.metric = metric
+        dockGauge.metric = metric
     }
 
     @objc fileprivate func toggleLiveDockIcon() {
         DockGauge.savedEnabled.toggle()
-        dockGauge?.isEnabled = DockGauge.savedEnabled
+        dockGauge.isEnabled = DockGauge.savedEnabled
     }
 
     /// Checked by `validateMenuItem`, like the metric items.
@@ -119,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showsNotch.toggle()
         showsNotch ? notch?.show() : notch?.hide()
         notchItem?.state = showsNotch ? .on : .off
+        updateDockIcon()
     }
 
     private func makeMenu() -> NSMenu {
@@ -211,6 +240,7 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate
-    app.setActivationPolicy(.regular)
+    // Set before launch so a hidden Dock icon never flashes up.
+    app.setActivationPolicy(delegate.wantsDockIcon ? .regular : .accessory)
     app.run()
 }

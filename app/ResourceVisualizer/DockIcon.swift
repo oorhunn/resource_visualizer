@@ -204,9 +204,10 @@ final class DockGaugeView: NSView {
     }
 }
 
-/// Turns the app icon into a live gauge while enabled, and the minimized window's own tile too
-/// when it has one. With "Minimize windows into application icon" on, a minimized window has no
-/// tile of its own, so the app icon is the only one. Disabled, both tiles stay static.
+/// Turns the app icon into a live gauge while enabled and the icon is in the Dock, and the
+/// minimized dashboard's own tile too when it has one. With "Minimize windows into application
+/// icon" on, a minimized window has no tile of its own, so the app icon is the only one.
+/// Disabled, both tiles stay static.
 @MainActor
 final class DockGauge {
     static let sparklinePoints = 24
@@ -230,7 +231,25 @@ final class DockGauge {
         didSet { update() }
     }
 
-    private let window: NSWindow
+    /// Whether the app has a Dock icon at all; hidden, nothing animates.
+    var inDock: Bool {
+        didSet { update() }
+    }
+
+    /// The dashboard, whose tile shows the gauge while it is minimized.
+    var window: NSWindow? {
+        willSet {
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers = []
+            if window?.dockTile.contentView === windowView { window?.dockTile.contentView = nil }
+            minimized = false
+        }
+        didSet {
+            observe()
+            update()
+        }
+    }
+
     private let monitor: Monitor
     // A view has one superview, so each tile gets its own.
     private let appView = DockGaugeView()
@@ -241,12 +260,17 @@ final class DockGauge {
     private var lastPointID: Int?
     private var pointArrived = Date.distantPast
 
-    init(window: NSWindow, monitor: Monitor, metric: DockMetric, enabled: Bool = true) {
-        self.window = window
+    init(monitor: Monitor, metric: DockMetric, enabled: Bool = true, inDock: Bool = true) {
         self.monitor = monitor
         self.metric = metric
         self.isEnabled = enabled
+        self.inDock = inDock
         for view in [appView, windowView] { view.metric = metric }
+        update()
+    }
+
+    private func observe() {
+        guard let window else { return }
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: NSWindow.willMiniaturizeNotification, object: window,
@@ -264,7 +288,6 @@ final class DockGauge {
                 }
             },
         ]
-        update()
     }
 
     private static var minimizesIntoAppIcon: Bool {
@@ -274,16 +297,19 @@ final class DockGauge {
     private func update() {
         refresh()
         // Read the Dock setting on every change, since it can change while the app runs.
-        attach(appView, to: NSApp.dockTile, live: isEnabled)
-        attach(windowView, to: window.dockTile,
-               live: isEnabled && minimized && !Self.minimizesIntoAppIcon)
-        if isEnabled, timer == nil {
+        let live = isEnabled && inDock
+        attach(appView, to: NSApp.dockTile, live: live)
+        if let window {
+            attach(windowView, to: window.dockTile,
+                   live: live && minimized && !Self.minimizesIntoAppIcon)
+        }
+        if live, timer == nil {
             let timer = Timer(timeInterval: 1 / Self.frameRate, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
             RunLoop.main.add(timer, forMode: .common)
             self.timer = timer
-        } else if !isEnabled {
+        } else if !live {
             timer?.invalidate()
             timer = nil
         }
@@ -301,7 +327,7 @@ final class DockGauge {
     }
 
     private var liveTiles: [NSDockTile] {
-        [NSApp.dockTile, window.dockTile].filter { $0.contentView is DockGaugeView }
+        [NSApp.dockTile, window?.dockTile].compactMap { $0 }.filter { $0.contentView is DockGaugeView }
     }
 
     private func displayTiles() {
