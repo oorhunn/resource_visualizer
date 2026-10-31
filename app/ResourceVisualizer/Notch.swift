@@ -213,6 +213,8 @@ private struct NotchPanel: View {
             ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory,
                      labeled: false)
                 .frame(width: 210)
+                // No hover highlight or tooltip here, so pointer moves don't redraw the chip.
+                .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
