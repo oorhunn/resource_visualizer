@@ -150,7 +150,9 @@ final class Monitor {
                     readSample(includeProcesses: includeProcesses, includeDisk: includeDisk)
                 }.value
                 self.apply(raw)
-                try? await Task.sleep(for: .seconds(self.interval))
+                // Slack lets the system coalesce this wakeup with others.
+                try? await Task.sleep(for: .seconds(self.interval),
+                                      tolerance: .seconds(self.interval / 10))
             }
         }
     }
