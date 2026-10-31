@@ -9,6 +9,8 @@ import SwiftUI
 /// instructions clocked through a textbook pipeline, which issues as often as the core's load.
 struct CoreZoomView: View {
     let core: CoreSample
+    /// Stops the animation and the pipeline clock, e.g. while the window is hidden.
+    var paused = false
     let exit: () -> Void
 
     // Property wrappers rather than the @State macro, which is unavailable without Xcode.
@@ -17,7 +19,7 @@ struct CoreZoomView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: paused)) { timeline in
                 GeometryReader { geometry in
                     let scene = Scene(pipeline: pipeline, date: timeline.date, size: geometry.size,
                                       camera: view.camera(at: timeline.date), die: view.die)
@@ -40,9 +42,10 @@ struct CoreZoomView: View {
         }
         .onAppear {
             pipeline.load = (core.busy ?? 0) / 100
-            pipeline.start()
+            if !paused { pipeline.start() }
         }
         .onDisappear { pipeline.stop() }
+        .onChange(of: paused) { _, paused in paused ? pipeline.stop() : pipeline.start() }
         .onChange(of: core.busy) { _, busy in pipeline.load = (busy ?? 0) / 100 }
     }
 

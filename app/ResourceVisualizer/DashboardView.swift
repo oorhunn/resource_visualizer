@@ -7,6 +7,7 @@ final class DashboardState {
     var filter = ""
     var order = [KeyPathComparator(\ProcessRow.cpu, order: .reverse)]
     var zoomedCore: Int? // CPU core shown in the transistor-level zoom, if any
+    var visible = true   // false while the window is minimized, covered or on another Space
 }
 
 struct DashboardView: View {
@@ -37,10 +38,11 @@ struct DashboardView: View {
                 }
                 Card("Chip") {
                     if let id = state.zoomedCore, let core = monitor.cores.first(where: { $0.id == id }) {
-                        CoreZoomView(core: core) { withAnimation(.snappy) { state.zoomedCore = nil } }
+                        CoreZoomView(core: core, paused: !state.visible) { withAnimation(.snappy) { state.zoomedCore = nil } }
                             .transition(.scale(scale: 0.8).combined(with: .opacity))
                     } else {
-                        ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory) { id in
+                        ChipView(cores: monitor.cores, gpu: monitor.gpus.first, memory: monitor.memory,
+                                 paused: !state.visible) { id in
                             withAnimation(.snappy) { state.zoomedCore = id }
                         }
                         .frame(height: 300)

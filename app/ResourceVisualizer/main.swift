@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dashboardState = DashboardState()
     private var dashboard: NSWindow?
     private var dashboardFitted = false
-    private var dashboardCloseObserver: NSObjectProtocol?
+    private var dashboardObservers: [NSObjectProtocol] = []
     private var notch: NotchController?
     private var notchItem: NSMenuItem?
     private lazy var dockGauge = DockGauge(monitor: monitor, metric: DockMetric.saved,
@@ -61,10 +61,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.isReleasedWhenClosed = false
             window.center()
             window.setFrameAutosaveName("Dashboard")
-            dashboardCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
-                                                   object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.dashboardWillClose() }
-            }
+            let center = NotificationCenter.default
+            dashboardObservers = [
+                center.addObserver(forName: NSWindow.willCloseNotification, object: window,
+                                   queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.dashboardWillClose() }
+                },
+                // Hidden, the dashboard pauses its animations.
+                center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,
+                                   object: window, queue: .main) { [weak self, weak window] _ in
+                    MainActor.assumeIsolated {
+                        guard let window else { return }
+                        self?.dashboardState.visible = window.occlusionState.contains(.visible)
+                    }
+                },
+            ]
             dashboard = window
             dockGauge.window = window
             updateDockIcon()
@@ -76,8 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Drops the window and its views so a closed dashboard costs nothing; it is rebuilt on open.
     private func dashboardWillClose() {
         guard let window = dashboard else { return }
-        dashboardCloseObserver.map(NotificationCenter.default.removeObserver)
-        dashboardCloseObserver = nil
+        dashboardObservers.forEach(NotificationCenter.default.removeObserver)
+        dashboardObservers = []
+        dashboardState.visible = true
         dashboard = nil
         dockGauge.window = nil
         updateDockIcon()

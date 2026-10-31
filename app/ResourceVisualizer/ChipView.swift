@@ -9,6 +9,8 @@ struct ChipView: View {
     let gpu: GpuSample?
     let memory: MemorySample
     var labeled = true
+    /// Stops the per-frame redraws, e.g. while the window is hidden.
+    var paused = false
     /// Called with a CPU core's id when it is clicked; nil leaves the chip unclickable.
     var onSelectCore: ((Int) -> Void)? = nil
 
@@ -19,7 +21,7 @@ struct ChipView: View {
     var body: some View {
         let target = Loads(cores: cores, gpu: gpu, memory: memory)
         // Capped at 80 Hz; uncapped it runs at the display rate, 120 Hz on ProMotion.
-        TimelineView(.animation(minimumInterval: 1 / 80, paused: motion.settled)) { timeline in
+        TimelineView(.animation(minimumInterval: 1 / 80, paused: motion.settled || paused)) { timeline in
             let shown = motion.loads(at: timeline.date) ?? target
             let chip = ChipModel(cores: shown.applied(to: cores), gpu: shown.applied(to: gpu),
                                  memory: shown.applied(to: memory))
