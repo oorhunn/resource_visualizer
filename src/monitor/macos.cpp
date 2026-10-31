@@ -186,30 +186,54 @@ std::vector<CoreTopology> collect_core_topology() {
     return result;
 }
 
+namespace {
+struct GpuService {
+    io_service_t service;
+    std::string name;
+    std::optional<double> core_count;
+};
+
+// The accelerators and their static properties, found once; only the statistics change.
+const std::vector<GpuService> &gpu_services() {
+    static const auto services = [] {
+        std::vector<GpuService> result;
+        io_iterator_t iterator = IO_OBJECT_NULL;
+        if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"),
+                                         &iterator) != KERN_SUCCESS)
+            return result;
+        io_service_t service;
+        while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+            io_name_t name{};
+            IORegistryEntryGetName(service, name);
+            GpuService gpu{service, name, std::nullopt}; // keeps the iterator's reference
+            auto cores = IORegistryEntryCreateCFProperty(service, CFSTR("gpu-core-count"),
+                                                         kCFAllocatorDefault, 0);
+            if (cores) {
+                double count = 0;
+                if (CFGetTypeID(cores) == CFNumberGetTypeID() &&
+                    CFNumberGetValue(static_cast<CFNumberRef>(cores), kCFNumberDoubleType,
+                                     &count) &&
+                    std::isfinite(count) && count > 0)
+                    gpu.core_count = count;
+                CFRelease(cores);
+            }
+            result.push_back(std::move(gpu));
+        }
+        IOObjectRelease(iterator);
+        return result;
+    }();
+    return services;
+}
+} // namespace
+
 std::vector<Gpu> collect_gpus() {
     std::vector<Gpu> result;
-    io_iterator_t iterator = IO_OBJECT_NULL;
-    if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"),
-                                     &iterator) != KERN_SUCCESS)
-        return result;
-    io_service_t service;
-    while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
-        io_name_t name{};
-        IORegistryEntryGetName(service, name);
+    for (const auto &service : gpu_services()) {
         Gpu gpu{};
-        gpu.name = name;
-        auto cores = IORegistryEntryCreateCFProperty(service, CFSTR("gpu-core-count"),
-                                                     kCFAllocatorDefault, 0);
-        if (cores) {
-            double count = 0;
-            if (CFGetTypeID(cores) == CFNumberGetTypeID() &&
-                CFNumberGetValue(static_cast<CFNumberRef>(cores), kCFNumberDoubleType, &count) &&
-                std::isfinite(count) && count > 0)
-                gpu.core_count = count;
-            CFRelease(cores);
-        }
-        auto property = IORegistryEntryCreateCFProperty(service, CFSTR("PerformanceStatistics"),
-                                                        kCFAllocatorDefault, 0);
+        gpu.name = service.name;
+        gpu.core_count = service.core_count;
+        auto property = IORegistryEntryCreateCFProperty(
+            service.service, CFSTR("PerformanceStatistics"), kCFAllocatorDefault, 0);
         if (property && CFGetTypeID(property) == CFDictionaryGetTypeID()) {
             auto dictionary = static_cast<CFDictionaryRef>(property);
             gpu.utilization = number(dictionary, CFSTR("Device Utilization %"), true);
@@ -221,9 +245,7 @@ std::vector<Gpu> collect_gpus() {
         if (property)
             CFRelease(property);
         result.push_back(gpu);
-        IOObjectRelease(service);
     }
-    IOObjectRelease(iterator);
     return result;
 }
 } // namespace monitor
