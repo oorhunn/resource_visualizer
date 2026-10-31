@@ -49,7 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.isReleasedWhenClosed = false
             window.center()
             window.setFrameAutosaveName("Dashboard")
-            dockGauge = DockGauge(window: window, monitor: monitor, metric: DockMetric.saved)
+            dockGauge = DockGauge(window: window, monitor: monitor, metric: DockMetric.saved,
+                                   enabled: DockGauge.savedEnabled)
             dashboard = window
         }
         NSApp.activate()
@@ -76,6 +77,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dockGauge?.metric = metric
     }
 
+    @objc fileprivate func toggleLiveDockIcon() {
+        DockGauge.savedEnabled.toggle()
+        dockGauge?.isEnabled = DockGauge.savedEnabled
+    }
+
+    /// Checked by `validateMenuItem`, like the metric items.
+    private func liveDockIconItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Live Dock Icon", action: #selector(toggleLiveDockIcon),
+                              keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
     /// One CPU/GPU item per metric; checked by `validateMenuItem` so the main and Dock menus agree.
     private func dockMetricMenuItems() -> [NSMenuItem] {
         DockMetric.allCases.map { metric in
@@ -88,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func dockMetricSubmenu() -> NSMenuItem {
-        let item = NSMenuItem(title: "Minimized Icon Shows", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "Dock Icon Shows", action: nil, keyEquivalent: "")
         item.submenu = NSMenu(title: item.title)
         dockMetricMenuItems().forEach(item.submenu!.addItem)
         return item
@@ -96,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
+        menu.addItem(liveDockIconItem())
         menu.addItem(dockMetricSubmenu())
         return menu
     }
@@ -131,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                  #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
             .separator(),
             notchItem,
+            liveDockIconItem(),
             dockMetricSubmenu(),
             .separator(),
             item("Hide Resource Visualizer", #selector(NSApplication.hide(_:)), "h"),
@@ -161,6 +177,8 @@ extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(selectDockMetric(_:)) {
             menuItem.state = menuItem.representedObject as? String == DockMetric.saved.rawValue ? .on : .off
+        } else if menuItem.action == #selector(toggleLiveDockIcon) {
+            menuItem.state = DockGauge.savedEnabled ? .on : .off
         }
         return true
     }

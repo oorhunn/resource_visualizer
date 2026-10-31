@@ -204,90 +204,118 @@ final class DockGaugeView: NSView {
     }
 }
 
-/// Animates a window's Dock tile while it is minimized; the app icon stays static. With
-/// "Minimize windows into application icon" on, the window has no tile of its own, so the app
-/// icon shows the gauge instead until the window is restored.
+/// Turns the app icon into a live gauge while enabled, and the minimized window's own tile too
+/// when it has one. With "Minimize windows into application icon" on, a minimized window has no
+/// tile of its own, so the app icon is the only one. Disabled, both tiles stay static.
 @MainActor
 final class DockGauge {
     static let sparklinePoints = 24
     private static let frameRate = 30.0
 
+    /// Whether the live gauge is on; remembered across launches, on by default.
+    static var savedEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "liveDockIcon") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "liveDockIcon") }
+    }
+
     var metric: DockMetric {
         didSet {
-            view.metric = metric
+            for view in [appView, windowView] { view.metric = metric }
             refresh()
-            tile?.display()
+            displayTiles()
         }
+    }
+
+    var isEnabled: Bool {
+        didSet { update() }
     }
 
     private let window: NSWindow
     private let monitor: Monitor
-    private let view = DockGaugeView()
+    // A view has one superview, so each tile gets its own.
+    private let appView = DockGaugeView()
+    private let windowView = DockGaugeView()
+    private var minimized = false
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
-    private var tile: NSDockTile?
     private var lastPointID: Int?
     private var pointArrived = Date.distantPast
 
-    init(window: NSWindow, monitor: Monitor, metric: DockMetric) {
+    init(window: NSWindow, monitor: Monitor, metric: DockMetric, enabled: Bool = true) {
         self.window = window
         self.monitor = monitor
         self.metric = metric
-        view.metric = metric
+        self.isEnabled = enabled
+        for view in [appView, windowView] { view.metric = metric }
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: NSWindow.willMiniaturizeNotification, object: window,
                                queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.start() }
+                MainActor.assumeIsolated {
+                    self?.minimized = true
+                    self?.update()
+                }
             },
             center.addObserver(forName: NSWindow.didDeminiaturizeNotification, object: window,
                                queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stop() }
+                MainActor.assumeIsolated {
+                    self?.minimized = false
+                    self?.update()
+                }
             },
         ]
+        update()
     }
 
     private static var minimizesIntoAppIcon: Bool {
         UserDefaults(suiteName: "com.apple.dock")?.bool(forKey: "minimize-to-application") ?? false
     }
 
-    private func start() {
-        // Read the Dock setting on every minimize, since it can change while the app runs.
-        let tile = Self.minimizesIntoAppIcon ? NSApp.dockTile : window.dockTile
-        if tile !== self.tile {
-            self.tile?.contentView = nil
-            self.tile?.display()
-            tile.contentView = view
-            self.tile = tile
-        }
-        // Jump straight to the current value so the tile is right the moment it lands in the Dock.
+    private func update() {
         refresh()
-        view.displayed = view.current ?? 0
-        view.scroll = 1
-        tile.display()
-        guard timer == nil else { return }
-        let timer = Timer(timeInterval: 1 / Self.frameRate, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+        // Read the Dock setting on every change, since it can change while the app runs.
+        attach(appView, to: NSApp.dockTile, live: isEnabled)
+        attach(windowView, to: window.dockTile,
+               live: isEnabled && minimized && !Self.minimizesIntoAppIcon)
+        if isEnabled, timer == nil {
+            let timer = Timer(timeInterval: 1 / Self.frameRate, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+        } else if !isEnabled {
+            timer?.invalidate()
+            timer = nil
         }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
     }
 
-    private func stop() {
-        timer?.invalidate()
-        timer = nil
-        // Give the app icon back; a window tile is only visible while minimized anyway.
-        if tile === NSApp.dockTile {
-            tile?.contentView = nil
-            tile?.display()
-            tile = nil
+    private func attach(_ view: DockGaugeView, to tile: NSDockTile, live: Bool) {
+        guard live != (tile.contentView === view) else { return }
+        tile.contentView = live ? view : nil
+        if live {
+            // Jump straight to the current value so the tile is right the moment it appears.
+            view.displayed = view.current ?? 0
+            view.scroll = 1
         }
+        tile.display()
+    }
+
+    private var liveTiles: [NSDockTile] {
+        [NSApp.dockTile, window.dockTile].filter { $0.contentView is DockGaugeView }
+    }
+
+    private func displayTiles() {
+        liveTiles.forEach { $0.display() }
     }
 
     private func refresh() {
         let points = monitor.history.suffix(Self.sparklinePoints)
-        view.history = points.map { metric.value(of: $0) ?? 0 }
-        view.current = points.last.flatMap(metric.value)
+        let history = points.map { metric.value(of: $0) ?? 0 }
+        let current = points.last.flatMap(metric.value)
+        for view in [appView, windowView] {
+            view.history = history
+            view.current = current
+        }
         if points.last?.id != lastPointID {
             lastPointID = points.last?.id
             pointArrived = Date()
@@ -297,12 +325,16 @@ final class DockGauge {
     private func tick() {
         refresh()
         // Ease toward the latest value and slide the sparkline over one sampling interval.
-        let target = view.current ?? 0
-        let before = (view.displayed, view.scroll)
-        view.displayed += (target - view.displayed) * (1 - exp(-6 / Self.frameRate))
-        if abs(target - view.displayed) < 0.05 { view.displayed = target }
-        view.scroll = CGFloat(min(Date().timeIntervalSince(pointArrived) / max(monitor.interval, 0.1), 1))
-        // Redraw only while something is moving.
-        if before != (view.displayed, view.scroll) { tile?.display() }
+        let scroll = CGFloat(min(Date().timeIntervalSince(pointArrived) / max(monitor.interval, 0.1), 1))
+        for tile in liveTiles {
+            guard let view = tile.contentView as? DockGaugeView else { continue }
+            let target = view.current ?? 0
+            let before = (view.displayed, view.scroll)
+            view.displayed += (target - view.displayed) * (1 - exp(-6 / Self.frameRate))
+            if abs(target - view.displayed) < 0.05 { view.displayed = target }
+            view.scroll = scroll
+            // Redraw only while something is moving.
+            if before != (view.displayed, view.scroll) { tile.display() }
+        }
     }
 }

@@ -99,16 +99,15 @@ carry logic. Only the instruction rate is live data.
 
 ## Dock
 
-![The minimized window's live Dock tile switching from CPU to GPU](docs/media/dock.gif)
+![The live Dock icon switching from CPU to GPU](docs/media/dock.gif)
 
 - The app icon is drawn in code (`DockIcon.swift`); `scripts/bundle.sh` exports it to
   `AppIcon.icns`.
-- Minimizing the dashboard turns its Dock tile into a live gauge: a ring that eases to the
-  current value over a scrolling history sparkline. Choose **CPU** or **GPU** under
-  **Resource Visualizer → Minimized Icon Shows**, or from the Dock icon's right-click menu.
-  The choice is remembered. The tile only redraws while the window is minimized.
-  With **Minimize windows into application icon** turned on in Dock settings, the window has
-  no tile of its own, so the app icon shows the gauge until the window is restored.
+- The app icon in the Dock is a live gauge: a ring that eases to the current value over a
+  scrolling history sparkline. A minimized dashboard's own tile shows the same gauge. Turn it
+  on or off with **Live Dock Icon** in the Dock icon's right-click menu or the
+  **Resource Visualizer** menu; turned off, the icon is static. Choose **CPU** or **GPU**
+  under **Dock Icon Shows** in either menu. Both choices are remembered.
 
 ## Terminal UI
 
